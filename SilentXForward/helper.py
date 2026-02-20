@@ -3,7 +3,7 @@ import os
 from SilentXForward import database
 from SilentXForward.forward import get_forward_runtime_stats, set_forwarding_paused
 from pyrogram import Client, filters, enums
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
 
 logging.basicConfig(level=logging.INFO)
@@ -104,6 +104,47 @@ BUTTONS = InlineKeyboardMarkup(
 )
 
 
+def _status_icon(value: bool) -> str:
+    return "✅" if value else "❌"
+
+
+def build_settings_keyboard():
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🤖 Bots", callback_data="settings:bots") , InlineKeyboardButton("🏷 Channels", callback_data="settings:channels")],
+            [InlineKeyboardButton("✒️ Caption", callback_data="settings:caption"), InlineKeyboardButton("🗄 MongoDB", callback_data="settings:mongodb")],
+            [InlineKeyboardButton("🕵️ Filters", callback_data="settings:filters"), InlineKeyboardButton("🔲 Button", callback_data="settings:button")],
+            [InlineKeyboardButton("🧪 Extra Settings", callback_data="settings:extra")],
+            [InlineKeyboardButton("≪ Back", callback_data="settings:back")],
+        ]
+    )
+
+
+def build_filter_keyboard(settings):
+    rows = [
+        ("🏷 Forward tag", "forward_tag"),
+        ("🖍 Texts", "texts"),
+        ("📁 Documents", "documents"),
+        ("🎞 Videos", "videos"),
+        ("📷 Photos", "photos"),
+        ("🎧 Audios", "audios"),
+        ("🎙 Voices", "voices"),
+        ("🎭 Animations", "animations"),
+        ("🃏 Stickers", "stickers"),
+        ("▶️ Skip duplicate", "skip_duplicate"),
+    ]
+
+    keyboard = []
+    for label, key in rows:
+        keyboard.append([
+            InlineKeyboardButton(label, callback_data="noop"),
+            InlineKeyboardButton(_status_icon(settings.get(key, False)), callback_data=f"toggle:{key}"),
+        ])
+
+    keyboard.append([InlineKeyboardButton("≪ Back", callback_data="settings:menu")])
+    return InlineKeyboardMarkup(keyboard)
+
+
 def is_owner(user_id: int) -> bool:
     return OWNER_ID and user_id == OWNER_ID
 
@@ -173,19 +214,64 @@ async def unequify_command(client, message: Message):
 
 @Client.on_message(filters.command("settings") & filters.private)
 async def settings_command(client, message: Message):
-    mappings = await database.get_user_mappings(message.from_user.id)
-    total_targets = sum(len(item.get("target_ids", [])) for item in mappings)
     runtime = get_forward_runtime_stats()
-    forwarding_state = "Paused" if runtime["paused"] else "Active"
-
-    await message.reply_text(
-        f"<b>⚙️ Your Settings</b>\n\n"
-        f"• Sources: <b>{len(mappings)}</b>\n"
-        f"• Targets: <b>{total_targets}</b>\n"
-        f"• Forwarding: <b>{forwarding_state}</b>\n\n"
-        f"Use <code>/set</code>, <code>/remove_target</code>, <code>/remove_source</code>, and <code>/reset</code> to manage.",
-        parse_mode=enums.ParseMode.HTML,
+    text = (
+        "<b>⚙️ Change your settings as your wish</b>\n\n"
+        f"Forwarding: <b>{'Paused' if runtime['paused'] else 'Active'}</b>"
     )
+    await message.reply_text(
+        text,
+        parse_mode=enums.ParseMode.HTML,
+        reply_markup=build_settings_keyboard(),
+    )
+
+
+@Client.on_callback_query(filters.regex(r"^(settings:|toggle:|noop$)"))
+async def settings_callbacks(client, callback_query: CallbackQuery):
+    user_id = callback_query.from_user.id
+    data = callback_query.data
+
+    if data == "noop":
+        await callback_query.answer("Use right-side button to toggle.", show_alert=False)
+        return
+
+    if data == "settings:menu":
+        runtime = get_forward_runtime_stats()
+        await callback_query.message.edit_text(
+            "<b>⚙️ Change your settings as your wish</b>\n\n"
+            f"Forwarding: <b>{'Paused' if runtime['paused'] else 'Active'}</b>",
+            parse_mode=enums.ParseMode.HTML,
+            reply_markup=build_settings_keyboard(),
+        )
+        await callback_query.answer()
+        return
+
+    if data == "settings:filters":
+        settings = await database.get_user_settings(user_id)
+        await callback_query.message.edit_text(
+            "<b>💠 CUSTOM FILTERS 💠</b>\n\n"
+            "Configure the type of messages which you want forward.",
+            parse_mode=enums.ParseMode.HTML,
+            reply_markup=build_filter_keyboard(settings),
+        )
+        await callback_query.answer()
+        return
+
+    if data.startswith("toggle:"):
+        key = data.split(":", 1)[1]
+        settings = await database.toggle_user_setting(user_id, key)
+        await callback_query.message.edit_reply_markup(reply_markup=build_filter_keyboard(settings))
+        await callback_query.answer(f"{key.replace('_', ' ').title()} updated")
+        return
+
+    if data in {"settings:bots", "settings:channels", "settings:caption", "settings:mongodb", "settings:button", "settings:extra"}:
+        await callback_query.answer("Feature section placeholder. Filter settings are active now.", show_alert=False)
+        return
+
+    if data == "settings:back":
+        await callback_query.message.delete()
+        await callback_query.answer()
+        return
 
 
 @Client.on_message(filters.command("status") & filters.private)

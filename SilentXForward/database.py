@@ -5,6 +5,7 @@ mongo_client = AsyncIOMotorClient(config.MONGO_URI)
 db = mongo_client[config.DB_NAME]
 
 channel_mappings = db['channel_mappings']
+user_settings = db['user_settings']
 
 async def get_user_mappings(user_id):
     cursor = channel_mappings.find({"user_id": user_id})
@@ -105,3 +106,42 @@ async def clear_everything():
 
 async def get_all_user_ids():
     return await channel_mappings.distinct("user_id")
+
+
+DEFAULT_USER_SETTINGS = {
+    "forward_tag": False,
+    "texts": True,
+    "documents": True,
+    "videos": True,
+    "photos": True,
+    "audios": True,
+    "voices": True,
+    "animations": True,
+    "stickers": True,
+    "skip_duplicate": False,
+}
+
+
+async def get_user_settings(user_id):
+    settings = await user_settings.find_one({"user_id": user_id})
+    if not settings:
+        return DEFAULT_USER_SETTINGS.copy()
+
+    merged = DEFAULT_USER_SETTINGS.copy()
+    merged.update(settings.get("settings", {}))
+    return merged
+
+
+async def toggle_user_setting(user_id, key):
+    if key not in DEFAULT_USER_SETTINGS:
+        return await get_user_settings(user_id)
+
+    current = await get_user_settings(user_id)
+    current[key] = not current[key]
+
+    await user_settings.update_one(
+        {"user_id": user_id},
+        {"$set": {"settings": current}},
+        upsert=True,
+    )
+    return current

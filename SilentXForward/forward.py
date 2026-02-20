@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from collections import defaultdict
+from collections import defaultdict, deque
 
 from pyrogram import Client, filters
 from pyrogram.errors import FloodWait, RPCError
@@ -15,6 +15,7 @@ message_queue: asyncio.Queue = asyncio.Queue()
 message_buffer = defaultdict(list)
 buffer_tasks = {}
 forward_runtime_state = {"paused": False}
+recent_signatures = defaultdict(lambda: deque(maxlen=2000))
 
 
 def set_forwarding_paused(paused: bool):
@@ -34,6 +35,61 @@ def get_forward_runtime_stats() -> dict:
         "buffered_messages": buffered_messages,
     }
 
+
+def _message_type(message):
+    if message.text:
+        return "texts"
+    if message.document:
+        return "documents"
+    if message.video:
+        return "videos"
+    if message.photo:
+        return "photos"
+    if message.audio:
+        return "audios"
+    if message.voice:
+        return "voices"
+    if message.animation:
+        return "animations"
+    if message.sticker:
+        return "stickers"
+    return "texts"
+
+
+def _message_signature(message):
+    if message.document:
+        return f"doc:{message.document.file_unique_id}"
+    if message.video:
+        return f"vid:{message.video.file_unique_id}"
+    if message.photo:
+        return f"pho:{message.photo.file_unique_id}"
+    if message.audio:
+        return f"aud:{message.audio.file_unique_id}"
+    if message.voice:
+        return f"voc:{message.voice.file_unique_id}"
+    if message.animation:
+        return f"ani:{message.animation.file_unique_id}"
+    if message.sticker:
+        return f"stk:{message.sticker.file_unique_id}"
+    if message.text:
+        return f"txt:{message.text.strip()}"
+    return f"msg:{message.chat.id}:{message.id}"
+
+
+def _allowed_by_settings(message, settings):
+    return settings.get(_message_type(message), True)
+
+
+def _is_duplicate(user_id, message, settings):
+    if not settings.get("skip_duplicate", False):
+        return False
+
+    sig = _message_signature(message)
+    history = recent_signatures[user_id]
+    if sig in history:
+        return True
+    history.append(sig)
+    return False
 
 
 async def handle_flood(func, **kwargs):
@@ -62,20 +118,27 @@ async def handle_flood(func, **kwargs):
     raise RuntimeError(f"Failed after {max_retries} retries")
 
 
-async def forward_single_message(client, message, chat_id):
+async def forward_single_message(client, message, chat_id, user_id, settings):
     try:
-        kwargs = {
-            "chat_id": chat_id,
-            "from_chat_id": message.chat.id,
-            "message_id": message.id,
-        }
+        if _is_duplicate(user_id, message, settings):
+            logger.info("Skipping duplicate for user %s, message %s", user_id, message.id)
+            return True
 
-        if message.caption:
-            kwargs["caption"] = message.caption
-            if message.caption_entities:
-                kwargs["caption_entities"] = message.caption_entities
+        if settings.get("forward_tag", False):
+            await handle_flood(
+                client.forward_messages,
+                chat_id=chat_id,
+                from_chat_id=message.chat.id,
+                message_ids=message.id,
+            )
+        else:
+            await handle_flood(
+                client.copy_message,
+                chat_id=chat_id,
+                from_chat_id=message.chat.id,
+                message_id=message.id,
+            )
 
-        await handle_flood(client.copy_message, **kwargs)
         logger.info("Forwarded message %s from %s to %s", message.id, message.chat.id, chat_id)
         return True
     except Exception as e:
@@ -83,13 +146,13 @@ async def forward_single_message(client, message, chat_id):
         return False
 
 
-async def forward_buffered_messages(client, messages, chat_id):
+async def forward_buffered_messages(client, messages, chat_id, user_id, settings):
     try:
         sorted_messages = sorted(messages, key=lambda m: m.id)
         success_count = 0
 
         for msg in sorted_messages:
-            if await forward_single_message(client, msg, chat_id):
+            if await forward_single_message(client, msg, chat_id, user_id, settings):
                 success_count += 1
                 await asyncio.sleep(FORWARD_DELAY_SECONDS)
 
@@ -109,12 +172,13 @@ async def process_queue(client):
             if not payload:
                 continue
 
-            messages, target_ids, retry_count = payload
+            messages, target_ids, retry_count, user_id = payload
+            settings = await database.get_user_settings(user_id)
             failed_targets = []
 
             for chat_id in target_ids:
                 try:
-                    success = await forward_buffered_messages(client, messages, chat_id)
+                    success = await forward_buffered_messages(client, messages, chat_id, user_id, settings)
                     if not success:
                         failed_targets.append(chat_id)
                     await asyncio.sleep(0.5)
@@ -128,19 +192,9 @@ async def process_queue(client):
 
             if failed_targets:
                 if retry_count < MAX_QUEUE_RETRIES:
-                    logger.info(
-                        "Re-queuing for %s failed target(s), retry %s/%s",
-                        len(failed_targets),
-                        retry_count + 1,
-                        MAX_QUEUE_RETRIES,
-                    )
-                    await message_queue.put((messages, failed_targets, retry_count + 1))
+                    await message_queue.put((messages, failed_targets, retry_count + 1, user_id))
                 else:
-                    logger.error(
-                        "Dropping %s target(s) after max retry (%s)",
-                        len(failed_targets),
-                        MAX_QUEUE_RETRIES,
-                    )
+                    logger.error("Dropping %s target(s) after max retry (%s)", len(failed_targets), MAX_QUEUE_RETRIES)
 
         except Exception as e:
             logger.error("Queue processing error: %s", e)
@@ -171,17 +225,16 @@ async def process_buffered_messages(buffer_key):
         if not mappings:
             return
 
-        message_count = len(messages)
         for mapping in mappings:
+            user_id = mapping.get("user_id")
             target_ids = mapping.get("target_ids", [])
-            if target_ids:
-                await message_queue.put((messages.copy(), target_ids, 0))
-                logger.info(
-                    "Queued buffered group (%s message(s)) from %s for %s target(s)",
-                    message_count,
-                    source_chat_id,
-                    len(target_ids),
-                )
+            if not user_id or not target_ids:
+                continue
+
+            settings = await database.get_user_settings(user_id)
+            filtered_messages = [m for m in messages if _allowed_by_settings(m, settings)]
+            if filtered_messages:
+                await message_queue.put((filtered_messages, target_ids, 0, user_id))
 
     except Exception as e:
         logger.error("Error processing buffered messages: %s", e)
@@ -202,7 +255,6 @@ async def forward_content(client, message):
         if _is_bot_origin(message):
             logger.info("Detected bot-originated channel message %s in %s", message.id, source_chat_id)
 
-        # Group album messages by media_group_id; process single messages immediately.
         if message.media_group_id:
             buffer_key = (source_chat_id, message.media_group_id)
             message_buffer[buffer_key].append(message)
@@ -217,9 +269,14 @@ async def forward_content(client, message):
             return
 
         for mapping in mappings:
+            user_id = mapping.get("user_id")
             target_ids = mapping.get("target_ids", [])
-            if target_ids:
-                await message_queue.put(([message], target_ids, 0))
+            if not user_id or not target_ids:
+                continue
+
+            settings = await database.get_user_settings(user_id)
+            if _allowed_by_settings(message, settings):
+                await message_queue.put(([message], target_ids, 0, user_id))
 
     except Exception as e:
         logger.error("Error in forward_content handler: %s", e, exc_info=True)
