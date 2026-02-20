@@ -6,15 +6,7 @@ from pyrogram import Client, filters
 from pyrogram.errors import FloodWait, RPCError
 
 from SilentXForward import database
-from config import (
-    BUFFER_DELAY,
-    FORWARD_AUDIO,
-    FORWARD_DELAY_SECONDS,
-    FORWARD_DOCUMENT,
-    FORWARD_PHOTO,
-    FORWARD_VIDEO,
-    MAX_QUEUE_RETRIES,
-)
+from config import BUFFER_DELAY, FORWARD_DELAY_SECONDS, MAX_QUEUE_RETRIES
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -22,31 +14,26 @@ logger = logging.getLogger(__name__)
 message_queue: asyncio.Queue = asyncio.Queue()
 message_buffer = defaultdict(list)
 buffer_tasks = {}
+forward_runtime_state = {"paused": False}
 
 
-def _build_content_filter():
-    allowed = []
-    if FORWARD_VIDEO:
-        allowed.append(filters.video)
-    if FORWARD_DOCUMENT:
-        allowed.append(filters.document)
-    if FORWARD_PHOTO:
-        allowed.append(filters.photo)
-    if FORWARD_AUDIO:
-        allowed.append(filters.audio)
-
-    # Keep bot safe even if all content toggles are disabled.
-    if not allowed:
-        logger.warning("No media filter enabled, defaulting to video + document")
-        return filters.video | filters.document
-
-    dynamic = allowed[0]
-    for flt in allowed[1:]:
-        dynamic = dynamic | flt
-    return dynamic
+def set_forwarding_paused(paused: bool):
+    forward_runtime_state["paused"] = bool(paused)
 
 
-CONTENT_FILTER = _build_content_filter()
+def is_forwarding_paused() -> bool:
+    return forward_runtime_state.get("paused", False)
+
+
+def get_forward_runtime_stats() -> dict:
+    buffered_messages = sum(len(items) for items in message_buffer.values())
+    return {
+        "paused": is_forwarding_paused(),
+        "queue_size": message_queue.qsize(),
+        "active_album_buffers": len(buffer_tasks),
+        "buffered_messages": buffered_messages,
+    }
+
 
 
 async def handle_flood(func, **kwargs):
@@ -116,10 +103,10 @@ async def forward_buffered_messages(client, messages, chat_id):
 
 async def process_queue(client):
     while True:
+        payload = None
         try:
             payload = await message_queue.get()
             if not payload:
-                message_queue.task_done()
                 continue
 
             messages, target_ids, retry_count = payload
@@ -155,11 +142,12 @@ async def process_queue(client):
                         MAX_QUEUE_RETRIES,
                     )
 
-            message_queue.task_done()
-
         except Exception as e:
             logger.error("Queue processing error: %s", e)
             await asyncio.sleep(1)
+        finally:
+            if payload is not None:
+                message_queue.task_done()
 
 
 async def start_processor(client):
@@ -189,7 +177,7 @@ async def process_buffered_messages(buffer_key):
             if target_ids:
                 await message_queue.put((messages.copy(), target_ids, 0))
                 logger.info(
-                    "Queued buffered group (%s file(s)) from %s for %s target(s)",
+                    "Queued buffered group (%s message(s)) from %s for %s target(s)",
                     message_count,
                     source_chat_id,
                     len(target_ids),
@@ -199,10 +187,20 @@ async def process_buffered_messages(buffer_key):
         logger.error("Error processing buffered messages: %s", e)
 
 
-@Client.on_message(filters.channel & CONTENT_FILTER & ~filters.sticker & ~filters.animation)
+def _is_bot_origin(message):
+    return bool((getattr(message, "from_user", None) and message.from_user.is_bot) or getattr(message, "via_bot", None))
+
+
+@Client.on_message((filters.channel & filters.incoming) | (filters.channel & filters.outgoing))
 async def forward_content(client, message):
     try:
         source_chat_id = message.chat.id
+
+        if is_forwarding_paused():
+            return
+
+        if _is_bot_origin(message):
+            logger.info("Detected bot-originated channel message %s in %s", message.id, source_chat_id)
 
         # Group album messages by media_group_id; process single messages immediately.
         if message.media_group_id:
