@@ -28,12 +28,6 @@ BUFFER_DELAY = _get_int("BUFFER_DELAY", 4)
 FORWARD_DELAY_SECONDS = float(os.environ.get("FORWARD_DELAY_SECONDS", "0.3"))
 MAX_QUEUE_RETRIES = _get_int("MAX_QUEUE_RETRIES", 3)
 
-# Content filters
-FORWARD_VIDEO = os.environ.get("FORWARD_VIDEO", "True").lower() in ("true", "1", "t")
-FORWARD_DOCUMENT = os.environ.get("FORWARD_DOCUMENT", "True").lower() in ("true", "1", "t")
-FORWARD_PHOTO = os.environ.get("FORWARD_PHOTO", "False").lower() in ("true", "1", "t")
-FORWARD_AUDIO = os.environ.get("FORWARD_AUDIO", "False").lower() in ("true", "1", "t")
-
 # Your Koyeb/Heroku App Url
 # Example : https://yorappurl.koyeb.app/
 APP_URL = os.environ.get("APP_URL", None)
