@@ -1,43 +1,79 @@
 import asyncio
 import logging
 from collections import defaultdict
+
 from pyrogram import Client, filters
 from pyrogram.errors import FloodWait, RPCError
+
 from SilentXForward import database
+from config import (
+    BUFFER_DELAY,
+    FORWARD_AUDIO,
+    FORWARD_DELAY_SECONDS,
+    FORWARD_DOCUMENT,
+    FORWARD_PHOTO,
+    FORWARD_VIDEO,
+    MAX_QUEUE_RETRIES,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-message_queue = asyncio.Queue()
+message_queue: asyncio.Queue = asyncio.Queue()
 message_buffer = defaultdict(list)
 buffer_tasks = {}
 
-BUFFER_DELAY = 4
+
+def _build_content_filter():
+    allowed = []
+    if FORWARD_VIDEO:
+        allowed.append(filters.video)
+    if FORWARD_DOCUMENT:
+        allowed.append(filters.document)
+    if FORWARD_PHOTO:
+        allowed.append(filters.photo)
+    if FORWARD_AUDIO:
+        allowed.append(filters.audio)
+
+    # Keep bot safe even if all content toggles are disabled.
+    if not allowed:
+        logger.warning("No media filter enabled, defaulting to video + document")
+        return filters.video | filters.document
+
+    dynamic = allowed[0]
+    for flt in allowed[1:]:
+        dynamic = dynamic | flt
+    return dynamic
+
+
+CONTENT_FILTER = _build_content_filter()
+
 
 async def handle_flood(func, **kwargs):
     max_retries = 3
     retry_count = 0
-    
+
     while retry_count < max_retries:
         try:
             return await func(**kwargs)
         except FloodWait as e:
-            logger.warning(f"FloodWait detected. Sleeping for {e.value} seconds.")
+            logger.warning("FloodWait detected. Sleeping for %ss.", e.value)
             await asyncio.sleep(e.value + 1)
         except RPCError as e:
-            logger.error(f"RPCError: {e}")
             retry_count += 1
+            logger.error("RPCError (attempt %s/%s): %s", retry_count, max_retries, e)
             if retry_count >= max_retries:
-                raise e
-            await asyncio.sleep(2 ** retry_count)
+                raise
+            await asyncio.sleep(2**retry_count)
         except Exception as e:
-            logger.error(f"Unexpected error: {e}")
             retry_count += 1
+            logger.error("Unexpected error (attempt %s/%s): %s", retry_count, max_retries, e)
             if retry_count >= max_retries:
-                raise e
-            await asyncio.sleep(2 ** retry_count)
-    
-    raise Exception(f"Failed after {max_retries} retries")
+                raise
+            await asyncio.sleep(2**retry_count)
+
+    raise RuntimeError(f"Failed after {max_retries} retries")
+
 
 async def forward_single_message(client, message, chat_id):
     try:
@@ -46,136 +82,146 @@ async def forward_single_message(client, message, chat_id):
             "from_chat_id": message.chat.id,
             "message_id": message.id,
         }
-        
+
         if message.caption:
             kwargs["caption"] = message.caption
             if message.caption_entities:
                 kwargs["caption_entities"] = message.caption_entities
-        
+
         await handle_flood(client.copy_message, **kwargs)
-        logger.info(f"Forwarded message {message.id} from {message.chat.id} to {chat_id}")
+        logger.info("Forwarded message %s from %s to %s", message.id, message.chat.id, chat_id)
         return True
     except Exception as e:
-        logger.error(f"Error forwarding message {message.id} to {chat_id}: {e}")
+        logger.error("Error forwarding message %s to %s: %s", message.id, chat_id, e)
         return False
+
 
 async def forward_buffered_messages(client, messages, chat_id):
     try:
         sorted_messages = sorted(messages, key=lambda m: m.id)
         success_count = 0
-        
+
         for msg in sorted_messages:
             if await forward_single_message(client, msg, chat_id):
                 success_count += 1
-                await asyncio.sleep(0.3)
-        
-        logger.info(f"Forwarded {success_count}/{len(messages)} buffered messages to {chat_id}")
-        return success_count > 0
-        
+                await asyncio.sleep(FORWARD_DELAY_SECONDS)
+
+        logger.info("Forwarded %s/%s buffered messages to %s", success_count, len(messages), chat_id)
+        return success_count == len(messages)
+
     except Exception as e:
-        logger.error(f"Error forwarding buffered messages to {chat_id}: {e}")
+        logger.error("Error forwarding buffered messages to %s: %s", chat_id, e)
         return False
+
 
 async def process_queue(client):
     while True:
         try:
-            data = await message_queue.get()
-            if not data:
+            payload = await message_queue.get()
+            if not payload:
                 message_queue.task_done()
                 continue
-            
-            message_or_list, target_ids = data
+
+            messages, target_ids, retry_count = payload
             failed_targets = []
-            
+
             for chat_id in target_ids:
                 try:
-                    success = await forward_buffered_messages(client, message_or_list, chat_id)
-                    
+                    success = await forward_buffered_messages(client, messages, chat_id)
                     if not success:
                         failed_targets.append(chat_id)
-                    
                     await asyncio.sleep(0.5)
-                    
                 except FloodWait as e:
-                    logger.warning(f"FloodWait for chat {chat_id}. Waiting {e.value}s")
+                    logger.warning("FloodWait for chat %s. Waiting %ss", chat_id, e.value)
                     await asyncio.sleep(e.value + 1)
                     failed_targets.append(chat_id)
                 except Exception as e:
-                    logger.error(f"Error forwarding to {chat_id}: {e}")
+                    logger.error("Error forwarding to %s: %s", chat_id, e)
                     failed_targets.append(chat_id)
-            
+
             if failed_targets:
-                logger.info(f"Re-queuing for {len(failed_targets)} failed target(s)")
-                await message_queue.put((message_or_list, failed_targets))
-            
+                if retry_count < MAX_QUEUE_RETRIES:
+                    logger.info(
+                        "Re-queuing for %s failed target(s), retry %s/%s",
+                        len(failed_targets),
+                        retry_count + 1,
+                        MAX_QUEUE_RETRIES,
+                    )
+                    await message_queue.put((messages, failed_targets, retry_count + 1))
+                else:
+                    logger.error(
+                        "Dropping %s target(s) after max retry (%s)",
+                        len(failed_targets),
+                        MAX_QUEUE_RETRIES,
+                    )
+
             message_queue.task_done()
-            
+
         except Exception as e:
-            logger.error(f"Queue processing error: {e}")
-            message_queue.task_done()
+            logger.error("Queue processing error: %s", e)
             await asyncio.sleep(1)
+
 
 async def start_processor(client):
     task = asyncio.create_task(process_queue(client))
     logger.info("Message processor started")
-    return {'main_processor': task}
+    return {"main_processor": task}
 
-async def process_buffered_messages(source_chat_id):
+
+async def process_buffered_messages(buffer_key):
     await asyncio.sleep(BUFFER_DELAY)
-    
-    buffer_key = source_chat_id
-    if buffer_key not in message_buffer:
-        return
-    
-    messages = message_buffer[buffer_key]
+
+    messages = message_buffer.pop(buffer_key, [])
+    buffer_tasks.pop(buffer_key, None)
     if not messages:
-        del message_buffer[buffer_key]
-        if buffer_key in buffer_tasks:
-            del buffer_tasks[buffer_key]
         return
-    
+
+    source_chat_id = messages[0].chat.id
+
     try:
         mappings = await database.get_all_targets_for_source(source_chat_id)
         if not mappings:
-            del message_buffer[buffer_key]
-            if buffer_key in buffer_tasks:
-                del buffer_tasks[buffer_key]
             return
-        
+
         message_count = len(messages)
         for mapping in mappings:
-            target_ids = mapping.get('target_ids', [])
+            target_ids = mapping.get("target_ids", [])
             if target_ids:
-                await message_queue.put((messages.copy(), target_ids))
-                logger.info(f"Queued buffered group ({message_count} files) from {source_chat_id} for {len(target_ids)} target(s)")
-        
-    except Exception as e:
-        logger.error(f"Error processing buffered messages: {e}")
-    finally:
-        if buffer_key in message_buffer:
-            del message_buffer[buffer_key]
-        if buffer_key in buffer_tasks:
-            del buffer_tasks[buffer_key]
+                await message_queue.put((messages.copy(), target_ids, 0))
+                logger.info(
+                    "Queued buffered group (%s file(s)) from %s for %s target(s)",
+                    message_count,
+                    source_chat_id,
+                    len(target_ids),
+                )
 
-@Client.on_message(
-    filters.channel & 
-    (filters.video | filters.document | filters.photo | filters.audio) & 
-    ~filters.sticker & 
-    ~filters.animation
-)
+    except Exception as e:
+        logger.error("Error processing buffered messages: %s", e)
+
+
+@Client.on_message(filters.channel & CONTENT_FILTER & ~filters.sticker & ~filters.animation)
 async def forward_content(client, message):
     try:
         source_chat_id = message.chat.id
-        
-        buffer_key = source_chat_id
-        message_buffer[buffer_key].append(message)
-        
-        if buffer_key in buffer_tasks:
-            buffer_tasks[buffer_key].cancel()
-        
-        buffer_tasks[buffer_key] = asyncio.create_task(
-            process_buffered_messages(source_chat_id)
-        )
-        
+
+        # Group album messages by media_group_id; process single messages immediately.
+        if message.media_group_id:
+            buffer_key = (source_chat_id, message.media_group_id)
+            message_buffer[buffer_key].append(message)
+
+            if buffer_key in buffer_tasks:
+                buffer_tasks[buffer_key].cancel()
+            buffer_tasks[buffer_key] = asyncio.create_task(process_buffered_messages(buffer_key))
+            return
+
+        mappings = await database.get_all_targets_for_source(source_chat_id)
+        if not mappings:
+            return
+
+        for mapping in mappings:
+            target_ids = mapping.get("target_ids", [])
+            if target_ids:
+                await message_queue.put(([message], target_ids, 0))
+
     except Exception as e:
-        logger.error(f"Error in forward_content handler: {e}", exc_info=True)
+        logger.error("Error in forward_content handler: %s", e, exc_info=True)
