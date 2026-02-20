@@ -16,6 +16,7 @@ START_TEXT = """<b>👋 Hello! I am SilentXForward Bot.</b>
 <b>Available Commands:</b>
 /start - Start the bot
 /help - Show help menu
+/commands - Show all commands
 /about - Show bot info
 /forward - Start forwarding setup wizard
 /set &lt;source_id&gt; &lt;target_id&gt; - Add source to target mapping
@@ -42,6 +43,7 @@ I Am An Auto-Forward Bot. I Forward All Message Types From Source Channels To Ta
 <b>Commands:</b>
 /start - Check if I am alive
 /help - Show this help message
+/commands - Show all commands
 /about - Show information about me
 /forward - Start interactive forwarding setup
 /set &lt;source_id&gt; &lt;target_id&gt; - Add target to source
@@ -100,6 +102,18 @@ async def start_command(client, message):
 
 @Client.on_message(filters.command("help") & filters.private)
 async def help_command(client, message):
+    await message.reply(
+        text=HELP_TEXT,
+        parse_mode=enums.ParseMode.HTML,
+        reply_markup=BUTTONS,
+        disable_web_page_preview=True
+    )
+
+
+
+
+@Client.on_message(filters.command("commands") & filters.private)
+async def commands_command(client, message):
     await message.reply(
         text=HELP_TEXT,
         parse_mode=enums.ParseMode.HTML,
@@ -299,7 +313,7 @@ async def set_channels(client, message: Message):
 
 
 @Client.on_message(filters.private & filters.text & ~filters.command([
-    "start", "help", "about", "forward", "unequify", "settings", "cancel", "reset", "donate",
+    "start", "help", "commands", "about", "forward", "unequify", "settings", "cancel", "reset", "donate",
     "resetall", "broadcast", "restart", "set", "remove_target", "remove_source", "list", "clear"
 ]))
 async def forward_wizard_input(client, message: Message):

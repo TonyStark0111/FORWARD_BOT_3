@@ -40,6 +40,7 @@ The Bot Is Configured Using .
 
 - `/start` - Start the bot
 - `/help` - Show help menu
+- `/commands` - Show all commands
 - `/about` - Show bot info
 - `/forward` - Start interactive forwarding setup (source -> target)
 - `/set <source_id> <target_id>` - Add mapping directly
