@@ -1,20 +1,12 @@
 import asyncio
 import logging
-from collections import defaultdict
+from collections import defaultdict, deque
 
 from pyrogram import Client, filters
 from pyrogram.errors import FloodWait, RPCError
 
 from SilentXForward import database
-from config import (
-    BUFFER_DELAY,
-    FORWARD_AUDIO,
-    FORWARD_DELAY_SECONDS,
-    FORWARD_DOCUMENT,
-    FORWARD_PHOTO,
-    FORWARD_VIDEO,
-    MAX_QUEUE_RETRIES,
-)
+from config import BUFFER_DELAY, FORWARD_DELAY_SECONDS, MAX_QUEUE_RETRIES
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -22,31 +14,106 @@ logger = logging.getLogger(__name__)
 message_queue: asyncio.Queue = asyncio.Queue()
 message_buffer = defaultdict(list)
 buffer_tasks = {}
+forward_runtime_state = {"paused": False}
+recent_signatures = defaultdict(lambda: deque(maxlen=2000))
 
 
-def _build_content_filter():
-    allowed = []
-    if FORWARD_VIDEO:
-        allowed.append(filters.video)
-    if FORWARD_DOCUMENT:
-        allowed.append(filters.document)
-    if FORWARD_PHOTO:
-        allowed.append(filters.photo)
-    if FORWARD_AUDIO:
-        allowed.append(filters.audio)
-
-    # Keep bot safe even if all content toggles are disabled.
-    if not allowed:
-        logger.warning("No media filter enabled, defaulting to video + document")
-        return filters.video | filters.document
-
-    dynamic = allowed[0]
-    for flt in allowed[1:]:
-        dynamic = dynamic | flt
-    return dynamic
+def set_forwarding_paused(paused: bool):
+    forward_runtime_state["paused"] = bool(paused)
 
 
-CONTENT_FILTER = _build_content_filter()
+def is_forwarding_paused() -> bool:
+    return forward_runtime_state.get("paused", False)
+
+
+def get_forward_runtime_stats() -> dict:
+    buffered_messages = sum(len(items) for items in message_buffer.values())
+    return {
+        "paused": is_forwarding_paused(),
+        "queue_size": message_queue.qsize(),
+        "active_album_buffers": len(buffer_tasks),
+        "buffered_messages": buffered_messages,
+    }
+
+
+def _message_type(message):
+    if message.text:
+        if message.entities and any(str(getattr(ent, "type", "")).lower() in ("url", "text_link", "messageentitytype.url", "messageentitytype.text_link") for ent in message.entities):
+            return "links"
+        return "texts"
+    if message.document:
+        return "documents"
+    if message.video:
+        return "videos"
+    if message.video_note:
+        return "video_notes"
+    if message.photo:
+        return "photos"
+    if message.audio:
+        return "audios"
+    if message.voice:
+        return "voices"
+    if message.animation:
+        return "animations"
+    if message.sticker:
+        return "stickers"
+    if message.poll:
+        return "polls"
+    if message.contact:
+        return "contacts"
+    if message.location or message.venue:
+        return "locations"
+    return "texts"
+
+
+def _message_signature(message):
+    if message.document:
+        return f"doc:{message.document.file_unique_id}"
+    if message.video:
+        return f"vid:{message.video.file_unique_id}"
+    if message.video_note:
+        return f"vno:{message.video_note.file_unique_id}"
+    if message.photo:
+        return f"pho:{message.photo.file_unique_id}"
+    if message.audio:
+        return f"aud:{message.audio.file_unique_id}"
+    if message.voice:
+        return f"voc:{message.voice.file_unique_id}"
+    if message.animation:
+        return f"ani:{message.animation.file_unique_id}"
+    if message.sticker:
+        return f"stk:{message.sticker.file_unique_id}"
+    if message.poll:
+        return f"pol:{getattr(message.poll, 'id', message.id)}"
+    if message.contact:
+        return f"con:{message.contact.phone_number}:{message.contact.first_name}"
+    if message.location:
+        return f"loc:{message.location.latitude}:{message.location.longitude}"
+    if message.venue:
+        return f"ven:{message.venue.latitude}:{message.venue.longitude}:{message.venue.title}"
+    if message.text:
+        return f"txt:{message.text.strip()}"
+    return f"msg:{message.chat.id}:{message.id}"
+
+
+def _allowed_by_settings(message, settings):
+    return settings.get(_message_type(message), True)
+
+
+def _forward_delay(settings):
+    return 0.02 if settings.get("fast_mode", False) else FORWARD_DELAY_SECONDS
+
+
+def _is_duplicate(user_id, message, settings):
+    if not settings.get("skip_duplicate", False):
+        return False
+
+    sig = _message_signature(message)
+    history = recent_signatures[user_id]
+    if sig in history:
+        return True
+    history.append(sig)
+    return False
 
 
 async def handle_flood(func, **kwargs):
@@ -75,20 +142,27 @@ async def handle_flood(func, **kwargs):
     raise RuntimeError(f"Failed after {max_retries} retries")
 
 
-async def forward_single_message(client, message, chat_id):
+async def forward_single_message(client, message, chat_id, user_id, settings):
     try:
-        kwargs = {
-            "chat_id": chat_id,
-            "from_chat_id": message.chat.id,
-            "message_id": message.id,
-        }
+        if _is_duplicate(user_id, message, settings):
+            logger.info("Skipping duplicate for user %s, message %s", user_id, message.id)
+            return True
 
-        if message.caption:
-            kwargs["caption"] = message.caption
-            if message.caption_entities:
-                kwargs["caption_entities"] = message.caption_entities
+        if settings.get("forward_tag", False) or settings.get("stream_mode", False):
+            await handle_flood(
+                client.forward_messages,
+                chat_id=chat_id,
+                from_chat_id=message.chat.id,
+                message_ids=message.id,
+            )
+        else:
+            await handle_flood(
+                client.copy_message,
+                chat_id=chat_id,
+                from_chat_id=message.chat.id,
+                message_id=message.id,
+            )
 
-        await handle_flood(client.copy_message, **kwargs)
         logger.info("Forwarded message %s from %s to %s", message.id, message.chat.id, chat_id)
         return True
     except Exception as e:
@@ -96,15 +170,15 @@ async def forward_single_message(client, message, chat_id):
         return False
 
 
-async def forward_buffered_messages(client, messages, chat_id):
+async def forward_buffered_messages(client, messages, chat_id, user_id, settings):
     try:
         sorted_messages = sorted(messages, key=lambda m: m.id)
         success_count = 0
 
         for msg in sorted_messages:
-            if await forward_single_message(client, msg, chat_id):
+            if await forward_single_message(client, msg, chat_id, user_id, settings):
                 success_count += 1
-                await asyncio.sleep(FORWARD_DELAY_SECONDS)
+                await asyncio.sleep(_forward_delay(settings))
 
         logger.info("Forwarded %s/%s buffered messages to %s", success_count, len(messages), chat_id)
         return success_count == len(messages)
@@ -116,21 +190,22 @@ async def forward_buffered_messages(client, messages, chat_id):
 
 async def process_queue(client):
     while True:
+        payload = None
         try:
             payload = await message_queue.get()
             if not payload:
-                message_queue.task_done()
                 continue
 
-            messages, target_ids, retry_count = payload
+            messages, target_ids, retry_count, user_id = payload
+            settings = await database.get_user_settings(user_id)
             failed_targets = []
 
             for chat_id in target_ids:
                 try:
-                    success = await forward_buffered_messages(client, messages, chat_id)
+                    success = await forward_buffered_messages(client, messages, chat_id, user_id, settings)
                     if not success:
                         failed_targets.append(chat_id)
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(0.15 if settings.get("fast_mode", False) else 0.5)
                 except FloodWait as e:
                     logger.warning("FloodWait for chat %s. Waiting %ss", chat_id, e.value)
                     await asyncio.sleep(e.value + 1)
@@ -141,25 +216,16 @@ async def process_queue(client):
 
             if failed_targets:
                 if retry_count < MAX_QUEUE_RETRIES:
-                    logger.info(
-                        "Re-queuing for %s failed target(s), retry %s/%s",
-                        len(failed_targets),
-                        retry_count + 1,
-                        MAX_QUEUE_RETRIES,
-                    )
-                    await message_queue.put((messages, failed_targets, retry_count + 1))
+                    await message_queue.put((messages, failed_targets, retry_count + 1, user_id))
                 else:
-                    logger.error(
-                        "Dropping %s target(s) after max retry (%s)",
-                        len(failed_targets),
-                        MAX_QUEUE_RETRIES,
-                    )
-
-            message_queue.task_done()
+                    logger.error("Dropping %s target(s) after max retry (%s)", len(failed_targets), MAX_QUEUE_RETRIES)
 
         except Exception as e:
             logger.error("Queue processing error: %s", e)
             await asyncio.sleep(1)
+        finally:
+            if payload is not None:
+                message_queue.task_done()
 
 
 async def start_processor(client):
@@ -183,28 +249,36 @@ async def process_buffered_messages(buffer_key):
         if not mappings:
             return
 
-        message_count = len(messages)
         for mapping in mappings:
+            user_id = mapping.get("user_id")
             target_ids = mapping.get("target_ids", [])
-            if target_ids:
-                await message_queue.put((messages.copy(), target_ids, 0))
-                logger.info(
-                    "Queued buffered group (%s file(s)) from %s for %s target(s)",
-                    message_count,
-                    source_chat_id,
-                    len(target_ids),
-                )
+            if not user_id or not target_ids:
+                continue
+
+            settings = await database.get_user_settings(user_id)
+            filtered_messages = [m for m in messages if _allowed_by_settings(m, settings)]
+            if filtered_messages:
+                await message_queue.put((filtered_messages, target_ids, 0, user_id))
 
     except Exception as e:
         logger.error("Error processing buffered messages: %s", e)
 
 
-@Client.on_message(filters.channel & CONTENT_FILTER & ~filters.sticker & ~filters.animation)
+def _is_bot_origin(message):
+    return bool((getattr(message, "from_user", None) and message.from_user.is_bot) or getattr(message, "via_bot", None))
+
+
+@Client.on_message((filters.channel & filters.incoming) | (filters.channel & filters.outgoing))
 async def forward_content(client, message):
     try:
         source_chat_id = message.chat.id
 
-        # Group album messages by media_group_id; process single messages immediately.
+        if is_forwarding_paused():
+            return
+
+        if _is_bot_origin(message):
+            logger.info("Detected bot-originated channel message %s in %s", message.id, source_chat_id)
+
         if message.media_group_id:
             buffer_key = (source_chat_id, message.media_group_id)
             message_buffer[buffer_key].append(message)
@@ -219,9 +293,14 @@ async def forward_content(client, message):
             return
 
         for mapping in mappings:
+            user_id = mapping.get("user_id")
             target_ids = mapping.get("target_ids", [])
-            if target_ids:
-                await message_queue.put(([message], target_ids, 0))
+            if not user_id or not target_ids:
+                continue
+
+            settings = await database.get_user_settings(user_id)
+            if _allowed_by_settings(message, settings):
+                await message_queue.put(([message], target_ids, 0, user_id))
 
     except Exception as e:
         logger.error("Error in forward_content handler: %s", e, exc_info=True)
