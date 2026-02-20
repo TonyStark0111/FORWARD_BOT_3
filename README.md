@@ -36,7 +36,22 @@ The Bot Is Configured Using .
 | `FORWARD_PHOTO` | Forward photo messages. | Optional | `False` |
 | `FORWARD_AUDIO` | Forward audio messages. | Optional | `False` |
 | `APP_URL` | URL Of Your Deployed App (Used For Self-Pinning To Keep Awake). | Optional | `None` |
+| `OWNER_ID` | Telegram user id allowed to use owner-only commands. | Optional | `0` |
 
+
+
+## Bot Commands
+
+- `/start` - Start the bot
+- `/forward` - Start forwarding flow
+- `/unequify` - Remove duplicate target IDs
+- `/settings` - Show current user settings
+- `/cancel` - Cancel ongoing interaction
+- `/reset` - Reset your mappings
+- `/donate` - Support developers
+- `/resetall` - Reset all user mappings (owner only)
+- `/broadcast <message>` - Broadcast message to users (owner only)
+- `/restart` - Restart bot process (owner only)
 
 ## Deployment
 
