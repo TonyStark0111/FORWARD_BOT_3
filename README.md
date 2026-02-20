@@ -1,6 +1,6 @@
 # SilentXForward Bot
 
-A Powerful And Efficient Telegram Bot Designed To Forward Videos And Documents From Multiple Source Channels To Multiple Target Channels Without The "Forwarded From" Tag.
+A Powerful And Efficient Telegram Bot Designed To Forward All Telegram Message Types (Text, Stickers, GIFs, Photos, Documents, Audio/Music, Video, And More) From Multiple Source Channels To Multiple Target Channels Without The "Forwarded From" Tag.
 
 **Join Telegram - [SilentXBotz](https://t.me/SilentXBotz)**
 
@@ -10,11 +10,12 @@ A Powerful And Efficient Telegram Bot Designed To Forward Videos And Documents F
 ## Features
 
 - **Multi-Source & Multi-Target**: Supports Forwarding From Multiple Source Channels To Multiple Destination Channels.
-- **Advanced Content Filtering**: Forward videos/documents by default and optionally enable photos/audio via env vars.
+- **Forward Everything**: Forwards all channel message types including text, stickers, GIFs, photos, documents, audio/music, and videos, including posts sent via bots in source channels.
 - **Tag Removal**: Forwards Messages Without The "Forwarded From" Tag.
 - **Smart Delivery**: Single posts are forwarded immediately while albums are grouped to preserve order.
 - **Retry & FloodWait Handling**: Automatic retry with bounded queue retries to avoid infinite loops.
 - **Keep-Alive**: Built-In Web Server To Keep The Bot Running On Platform Like Heroku/Koyeb.
+- **Interactive Settings Panel**: `/settings` now opens inline buttons for advanced configuration and message-type filters (texts, links, documents, videos, video notes, photos, audios, voices, animations, stickers, polls, contacts, locations), plus `fast_mode`, `stream_mode`, and `link_buttons` (STREAM/DOWNLOAD buttons) toggles.
 
 ## Configuration
 
@@ -31,12 +32,36 @@ The Bot Is Configured Using .
 | `BUFFER_DELAY` | Delay (seconds) for collecting album items before forwarding. | Optional | `4` |
 | `FORWARD_DELAY_SECONDS` | Delay between forwarded files for flood safety. | Optional | `0.3` |
 | `MAX_QUEUE_RETRIES` | Maximum retries for failed target forwarding. | Optional | `3` |
-| `FORWARD_VIDEO` | Forward video messages. | Optional | `True` |
-| `FORWARD_DOCUMENT` | Forward document messages. | Optional | `True` |
-| `FORWARD_PHOTO` | Forward photo messages. | Optional | `False` |
-| `FORWARD_AUDIO` | Forward audio messages. | Optional | `False` |
 | `APP_URL` | URL Of Your Deployed App (Used For Self-Pinning To Keep Awake). | Optional | `None` |
+| `OWNER_ID` | Telegram user id allowed to use owner-only commands. | Optional | `0` |
 
+
+
+## Bot Commands
+
+- `/start` - Start the bot
+- `/help` - Show help menu
+- `/commands` - Show all commands
+- `/about` - Show bot info
+- `/forward` - Start interactive forwarding setup (source -> target)
+- `/oldforward` - Forward old messages with from/to range and skip count
+- `/set <source_id> <target_id>` - Add mapping directly
+- `/remove_target <source_id> <target_id>` - Remove one target mapping
+- `/remove_source <source_id>` - Remove full source mapping
+- `/list` - Show your mappings
+- `/clear` - Clear all your mappings
+- `/unequify` - Remove duplicate target IDs
+- `/settings` - Show current user settings
+- `/status` - Show advanced runtime status
+- `/cancel` - Cancel ongoing interaction
+- `/reset` - Reset your mappings
+- `/donate` - Support developers
+- `/resetall` - Reset all user mappings (owner only)
+- `/broadcast <message>` - Broadcast message to users (owner only)
+- `/pauseforward` - Pause forwarding globally (owner only)
+- `/resumeforward` - Resume forwarding globally (owner only)
+- `/stats` - Show runtime queue/buffer stats (owner only)
+- `/restart` - Restart bot process (owner only)
 
 ## Deployment
 
