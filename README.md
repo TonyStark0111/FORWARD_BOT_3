@@ -10,10 +10,10 @@ A Powerful And Efficient Telegram Bot Designed To Forward Videos And Documents F
 ## Features
 
 - **Multi-Source & Multi-Target**: Supports Forwarding From Multiple Source Channels To Multiple Destination Channels.
-- **Content Filtering**: Strictly Forwards Only Videos And Documents. Ignores Text, Photos, Stickers, and GIFs.
+- **Advanced Content Filtering**: Forward videos/documents by default and optionally enable photos/audio via env vars.
 - **Tag Removal**: Forwards Messages Without The "Forwarded From" Tag.
-- **Instant Delivery**: Optimized Queue Processing For Near-Instant Forwarding.
-- **Flood Wait Handling**: Automatically Handles Telegram's Flood Wait Limits.
+- **Smart Delivery**: Single posts are forwarded immediately while albums are grouped to preserve order.
+- **Retry & FloodWait Handling**: Automatic retry with bounded queue retries to avoid infinite loops.
 - **Keep-Alive**: Built-In Web Server To Keep The Bot Running On Platform Like Heroku/Koyeb.
 
 ## Configuration
@@ -28,7 +28,14 @@ The Bot Is Configured Using .
 | `WEB_SERVER` | Set To `True` To Enable The Keep-Alive Web Server. | Optional | `True` |
 | `PORT` | Port For The Web Server. | Optional | `8080` |
 | `TG_WORKERS` | Number Of Pyrogram workers. | Optional | `4` |
-| `APP_URL` | URL Of Your Deployed App (Used For Self-Pinning To Keep Awake). | Yes | `None` |
+| `BUFFER_DELAY` | Delay (seconds) for collecting album items before forwarding. | Optional | `4` |
+| `FORWARD_DELAY_SECONDS` | Delay between forwarded files for flood safety. | Optional | `0.3` |
+| `MAX_QUEUE_RETRIES` | Maximum retries for failed target forwarding. | Optional | `3` |
+| `FORWARD_VIDEO` | Forward video messages. | Optional | `True` |
+| `FORWARD_DOCUMENT` | Forward document messages. | Optional | `True` |
+| `FORWARD_PHOTO` | Forward photo messages. | Optional | `False` |
+| `FORWARD_AUDIO` | Forward audio messages. | Optional | `False` |
+| `APP_URL` | URL Of Your Deployed App (Used For Self-Pinning To Keep Awake). | Optional | `None` |
 
 
 ## Deployment
@@ -55,7 +62,7 @@ The Bot Is Configured Using .
 1. **Clone the repository:**
    ```bash
    git clone https://github.com/NBBotz/Auto-Forward-Bot.git
-   cd SilentXForward
+   cd Auto-Forward-Bot
    ```
 
 2. **Install dependencies:**

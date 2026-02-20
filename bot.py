@@ -8,7 +8,7 @@ from aiohttp import web
 from pyrogram import Client
 from SilentXForward.forward import start_processor
 from SilentXForward import web_server
-from config import API_ID, API_HASH, BOT_TOKEN, TG_WORKERS, WEB_SERVER, PORT, APP_URL
+from config import API_ID, API_HASH, BOT_TOKEN, TG_WORKERS, WEB_SERVER, PORT, APP_URL, PING_INTERVAL
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -24,7 +24,7 @@ def ping_loop():
                     logger.error(f"⚠️ Ping Failed: {response.status}")
         except Exception as e:
             logger.debug(f"❌ Exception During Ping: {e}")
-        time.sleep(300)
+        time.sleep(PING_INTERVAL)
 
 if APP_URL:
     threading.Thread(target=ping_loop, daemon=True).start()
@@ -63,7 +63,7 @@ class Bot(Client):
 
     async def stop(self, *args, **kwargs):
         logger.info("🛑 Stopping Auto Forwarding...")
-        for task in self.processor_tasks.values():
+        for task in getattr(self, "processor_tasks", {}).values():
             task.cancel()
         await super().stop(*args, **kwargs)
         logger.info("Bot Stopped")
