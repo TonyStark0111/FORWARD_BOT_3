@@ -118,6 +118,11 @@ DEFAULT_USER_SETTINGS = {
     "voices": True,
     "animations": True,
     "stickers": True,
+    "video_notes": True,
+    "polls": True,
+    "contacts": True,
+    "locations": True,
+    "links": True,
     "skip_duplicate": False,
 }
 
