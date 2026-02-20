@@ -144,6 +144,7 @@ def build_filter_keyboard(settings):
         ("📍 Locations", "locations"),
         ("⚡ Fastest mode", "fast_mode"),
         ("📥 Stream mode", "stream_mode"),
+        ("🔗 Stream/Download buttons", "link_buttons"),
         ("▶️ Skip duplicate", "skip_duplicate"),
     ]
 
@@ -189,6 +190,28 @@ def _message_matches_user_filter(message, settings):
     return True
 
 
+
+def _message_public_link(msg):
+    chat = getattr(msg, "chat", None)
+    if not chat:
+        return None
+
+    username = getattr(chat, "username", None)
+    if username:
+        return f"https://t.me/{username}/{msg.id}"
+
+    chat_id = str(getattr(chat, "id", ""))
+    if chat_id.startswith("-100"):
+        return f"https://t.me/c/{chat_id[4:]}/{msg.id}"
+
+    return None
+
+
+def _is_linkable_media(msg):
+    return bool(msg and (msg.video or msg.document or msg.audio or msg.photo or msg.animation or msg.video_note))
+
+
+
 def _old_forward_delay(settings):
     return 0.02 if settings.get("fast_mode", False) else 0.12
 
@@ -198,17 +221,17 @@ async def _safe_old_forward_send(client, settings, target_chat_id, source_chat_i
     for attempt in range(retries):
         try:
             if settings.get("forward_tag", False) or settings.get("stream_mode", False):
-                await client.forward_messages(target_chat_id, source_chat_id, msg_id)
+                sent = await client.forward_messages(target_chat_id, source_chat_id, msg_id)
             else:
-                await client.copy_message(target_chat_id, source_chat_id, msg_id)
-            return True
+                sent = await client.copy_message(target_chat_id, source_chat_id, msg_id)
+            return True, sent
         except FloodWait as e:
             await asyncio.sleep(e.value + 1)
         except RPCError:
             await asyncio.sleep(2 ** (attempt + 1))
         except Exception:
             await asyncio.sleep(0.4)
-    return False
+    return False, None
 
 
 async def _run_old_forward_task(client, user_id, source_chat_id, target_chat_id, start_id, end_id, skip_count, status_message_id):
@@ -243,15 +266,31 @@ async def _run_old_forward_task(client, user_id, source_chat_id, target_chat_id,
                 skipped += 1
                 continue
 
-            sent = await _safe_old_forward_send(
+            ok, sent_msg = await _safe_old_forward_send(
                 client,
                 settings,
                 target_chat_id,
                 source_chat_id,
                 msg_id,
             )
-            if sent:
+            if ok:
                 forwarded += 1
+                if settings.get("link_buttons", False) and _is_linkable_media(sent_msg):
+                    link = _message_public_link(sent_msg)
+                    if link:
+                        stream_link = link
+                        download_link = f"{link}?download=1"
+                        await client.send_message(
+                            target_chat_id,
+                            "<b>▶️ Your links generated</b>",
+                            parse_mode=enums.ParseMode.HTML,
+                            reply_markup=InlineKeyboardMarkup(
+                                [[
+                                    InlineKeyboardButton("STREAM", url=stream_link),
+                                    InlineKeyboardButton("DOWNLOAD", url=download_link),
+                                ]]
+                            ),
+                        )
             else:
                 failed += 1
 

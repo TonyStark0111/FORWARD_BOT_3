@@ -4,6 +4,7 @@ from collections import defaultdict, deque
 
 from pyrogram import Client, filters
 from pyrogram.errors import FloodWait, RPCError
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from SilentXForward import database
 from config import BUFFER_DELAY, FORWARD_DELAY_SECONDS, MAX_QUEUE_RETRIES
@@ -100,6 +101,26 @@ def _allowed_by_settings(message, settings):
     return settings.get(_message_type(message), True)
 
 
+
+def _message_public_link(msg):
+    chat = getattr(msg, "chat", None)
+    if not chat:
+        return None
+
+    username = getattr(chat, "username", None)
+    if username:
+        return f"https://t.me/{username}/{msg.id}"
+
+    chat_id = str(getattr(chat, "id", ""))
+    if chat_id.startswith("-100"):
+        return f"https://t.me/c/{chat_id[4:]}/{msg.id}"
+
+    return None
+
+
+def _is_linkable_media(msg):
+    return bool(msg and (msg.video or msg.document or msg.audio or msg.photo or msg.animation or msg.video_note))
+
 def _forward_delay(settings):
     return 0.02 if settings.get("fast_mode", False) else FORWARD_DELAY_SECONDS
 
@@ -149,19 +170,35 @@ async def forward_single_message(client, message, chat_id, user_id, settings):
             return True
 
         if settings.get("forward_tag", False) or settings.get("stream_mode", False):
-            await handle_flood(
+            sent = await handle_flood(
                 client.forward_messages,
                 chat_id=chat_id,
                 from_chat_id=message.chat.id,
                 message_ids=message.id,
             )
         else:
-            await handle_flood(
+            sent = await handle_flood(
                 client.copy_message,
                 chat_id=chat_id,
                 from_chat_id=message.chat.id,
                 message_id=message.id,
             )
+
+        if settings.get("link_buttons", False) and _is_linkable_media(sent):
+            link = _message_public_link(sent)
+            if link:
+                await handle_flood(
+                    client.send_message,
+                    chat_id=chat_id,
+                    text="<b>▶️ Your links generated</b>",
+                    parse_mode="html",
+                    reply_markup=InlineKeyboardMarkup(
+                        [[
+                            InlineKeyboardButton("STREAM", url=link),
+                            InlineKeyboardButton("DOWNLOAD", url=f"{link}?download=1"),
+                        ]]
+                    ),
+                )
 
         logger.info("Forwarded message %s from %s to %s", message.id, message.chat.id, chat_id)
         return True

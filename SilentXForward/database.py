@@ -126,6 +126,7 @@ DEFAULT_USER_SETTINGS = {
     "skip_duplicate": False,
     "fast_mode": False,
     "stream_mode": False,
+    "link_buttons": False,
 }
 
 
