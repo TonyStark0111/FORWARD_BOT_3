@@ -1,6 +1,7 @@
 import logging
 import os
 from SilentXForward import database
+from SilentXForward.forward import get_forward_runtime_stats, set_forwarding_paused
 from pyrogram import Client, filters, enums
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -26,12 +27,16 @@ START_TEXT = """<b>👋 Hello! I am SilentXForward Bot.</b>
 /clear - Clear all your mappings
 /unequify - Remove duplicate target IDs
 /settings - Show your settings summary
+/status - Show advanced runtime status
 /cancel - Cancel ongoing wizard
 /reset - Reset your settings
 /donate - Support developers
 /resetall - Reset all users settings (owner only)
 /broadcast &lt;message&gt; - Broadcast message (owner only)
 /restart - Restart bot (owner only)
+/pauseforward - Pause forwarding (owner only)
+/resumeforward - Resume forwarding (owner only)
+/stats - Show forwarding runtime stats (owner only)
 
 <b>Maintained By:</b> <a href="https://t.me/SilentXBotz">SilentXBotz</a>
 """
@@ -53,12 +58,16 @@ I Am An Auto-Forward Bot. I Forward All Message Types From Source Channels To Ta
 /clear - Clear all mappings
 /unequify - Remove duplicate target IDs
 /settings - Show your current setup
+/status - Show advanced runtime status
 /cancel - Cancel ongoing forwarding setup
 /reset - Reset all your settings
 /donate - Support the developer
 /resetall - Reset all users (owner only)
 /broadcast &lt;message&gt; - Send message to users (owner only)
 /restart - Restart bot process (owner only)
+/pauseforward - Pause forwarding (owner only)
+/resumeforward - Resume forwarding (owner only)
+/stats - Show forwarding runtime stats (owner only)
 
 <b>How to use:</b>
 1. Add Me To Source Channels And Target Channels As Admin.
@@ -167,6 +176,26 @@ async def settings_command(client, message: Message):
     )
 
 
+@Client.on_message(filters.command("status") & filters.private)
+async def status_command(client, message: Message):
+    mappings = await database.get_user_mappings(message.from_user.id)
+    total_targets = sum(len(item.get("target_ids", [])) for item in mappings)
+    runtime = get_forward_runtime_stats()
+    wizard_active = "Yes" if message.from_user.id in user_sessions else "No"
+
+    await message.reply_text(
+        f"<b>📈 Advanced Status</b>\n\n"
+        f"• Sources: <b>{len(mappings)}</b>\n"
+        f"• Targets: <b>{total_targets}</b>\n"
+        f"• Wizard active: <b>{wizard_active}</b>\n"
+        f"• Forward paused: <b>{'Yes' if runtime['paused'] else 'No'}</b>\n"
+        f"• Queue size: <b>{runtime['queue_size']}</b>\n"
+        f"• Album buffers: <b>{runtime['active_album_buffers']}</b>\n"
+        f"• Buffered messages: <b>{runtime['buffered_messages']}</b>",
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
 @Client.on_message(filters.command("cancel") & filters.private)
 async def cancel_command(client, message: Message):
     user_sessions.pop(message.from_user.id, None)
@@ -231,6 +260,43 @@ async def broadcast_command(client, message: Message):
 
     await message.reply_text(
         f"<b>📣 Broadcast complete.</b> Sent to <b>{sent}</b>/<b>{len(user_ids)}</b> users.",
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
+@Client.on_message(filters.command("pauseforward") & filters.private)
+async def pause_forward_command(client, message: Message):
+    if not is_owner(message.from_user.id):
+        await message.reply_text("<b>❌ Owner only command.</b>", parse_mode=enums.ParseMode.HTML)
+        return
+
+    set_forwarding_paused(True)
+    await message.reply_text("<b>⏸️ Forwarding paused.</b>", parse_mode=enums.ParseMode.HTML)
+
+
+@Client.on_message(filters.command("resumeforward") & filters.private)
+async def resume_forward_command(client, message: Message):
+    if not is_owner(message.from_user.id):
+        await message.reply_text("<b>❌ Owner only command.</b>", parse_mode=enums.ParseMode.HTML)
+        return
+
+    set_forwarding_paused(False)
+    await message.reply_text("<b>▶️ Forwarding resumed.</b>", parse_mode=enums.ParseMode.HTML)
+
+
+@Client.on_message(filters.command("stats") & filters.private)
+async def stats_command(client, message: Message):
+    if not is_owner(message.from_user.id):
+        await message.reply_text("<b>❌ Owner only command.</b>", parse_mode=enums.ParseMode.HTML)
+        return
+
+    runtime = get_forward_runtime_stats()
+    await message.reply_text(
+        f"<b>🧠 Runtime Stats</b>\n\n"
+        f"• Forward paused: <b>{'Yes' if runtime['paused'] else 'No'}</b>\n"
+        f"• Queue size: <b>{runtime['queue_size']}</b>\n"
+        f"• Active album buffers: <b>{runtime['active_album_buffers']}</b>\n"
+        f"• Buffered messages: <b>{runtime['buffered_messages']}</b>",
         parse_mode=enums.ParseMode.HTML,
     )
 
@@ -313,8 +379,8 @@ async def set_channels(client, message: Message):
 
 
 @Client.on_message(filters.private & filters.text & ~filters.command([
-    "start", "help", "commands", "about", "forward", "unequify", "settings", "cancel", "reset", "donate",
-    "resetall", "broadcast", "restart", "set", "remove_target", "remove_source", "list", "clear"
+    "start", "help", "commands", "about", "forward", "unequify", "settings", "status", "cancel", "reset", "donate",
+    "resetall", "broadcast", "pauseforward", "resumeforward", "stats", "restart", "set", "remove_target", "remove_source", "list", "clear"
 ]))
 async def forward_wizard_input(client, message: Message):
     user_id = message.from_user.id

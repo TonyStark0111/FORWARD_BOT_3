@@ -50,11 +50,15 @@ The Bot Is Configured Using .
 - `/clear` - Clear all your mappings
 - `/unequify` - Remove duplicate target IDs
 - `/settings` - Show current user settings
+- `/status` - Show advanced runtime status
 - `/cancel` - Cancel ongoing interaction
 - `/reset` - Reset your mappings
 - `/donate` - Support developers
 - `/resetall` - Reset all user mappings (owner only)
 - `/broadcast <message>` - Broadcast message to users (owner only)
+- `/pauseforward` - Pause forwarding globally (owner only)
+- `/resumeforward` - Resume forwarding globally (owner only)
+- `/stats` - Show runtime queue/buffer stats (owner only)
 - `/restart` - Restart bot process (owner only)
 
 ## Deployment

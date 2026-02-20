@@ -70,11 +70,15 @@ class Bot(Client):
                 BotCommand("clear", "Clear all mappings"),
                 BotCommand("unequify", "Remove duplicate targets"),
                 BotCommand("settings", "Show your settings"),
+                BotCommand("status", "Show advanced status"),
                 BotCommand("cancel", "Cancel ongoing setup"),
                 BotCommand("reset", "Reset your settings"),
                 BotCommand("donate", "Support developers"),
                 BotCommand("resetall", "Reset all users (owner only)"),
                 BotCommand("broadcast", "Broadcast message (owner only)"),
+                BotCommand("pauseforward", "Pause forwarding (owner only)"),
+                BotCommand("resumeforward", "Resume forwarding (owner only)"),
+                BotCommand("stats", "Show runtime stats (owner only)"),
                 BotCommand("restart", "Restart bot (owner only)"),
             ]
         )

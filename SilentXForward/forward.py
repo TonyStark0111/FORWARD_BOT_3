@@ -14,7 +14,25 @@ logger = logging.getLogger(__name__)
 message_queue: asyncio.Queue = asyncio.Queue()
 message_buffer = defaultdict(list)
 buffer_tasks = {}
+forward_runtime_state = {"paused": False}
 
+
+def set_forwarding_paused(paused: bool):
+    forward_runtime_state["paused"] = bool(paused)
+
+
+def is_forwarding_paused() -> bool:
+    return forward_runtime_state.get("paused", False)
+
+
+def get_forward_runtime_stats() -> dict:
+    buffered_messages = sum(len(items) for items in message_buffer.values())
+    return {
+        "paused": is_forwarding_paused(),
+        "queue_size": message_queue.qsize(),
+        "active_album_buffers": len(buffer_tasks),
+        "buffered_messages": buffered_messages,
+    }
 
 
 
@@ -176,6 +194,9 @@ def _is_bot_origin(message):
 async def forward_content(client, message):
     try:
         source_chat_id = message.chat.id
+
+        if is_forwarding_paused():
+            return
 
         if _is_bot_origin(message):
             logger.info("Detected bot-originated channel message %s in %s", message.id, source_chat_id)
