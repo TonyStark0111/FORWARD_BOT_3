@@ -124,6 +124,8 @@ DEFAULT_USER_SETTINGS = {
     "locations": True,
     "links": True,
     "skip_duplicate": False,
+    "fast_mode": False,
+    "stream_mode": False,
 }
 
 

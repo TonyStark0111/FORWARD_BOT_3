@@ -5,6 +5,7 @@ import os
 from SilentXForward import database
 from SilentXForward.forward import get_forward_runtime_stats, set_forwarding_paused
 from pyrogram import Client, filters, enums
+from pyrogram.errors import FloodWait, RPCError
 from pyrogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
 
@@ -141,6 +142,8 @@ def build_filter_keyboard(settings):
         ("📊 Polls", "polls"),
         ("👤 Contacts", "contacts"),
         ("📍 Locations", "locations"),
+        ("⚡ Fastest mode", "fast_mode"),
+        ("📥 Stream mode", "stream_mode"),
         ("▶️ Skip duplicate", "skip_duplicate"),
     ]
 
@@ -186,6 +189,28 @@ def _message_matches_user_filter(message, settings):
     return True
 
 
+def _old_forward_delay(settings):
+    return 0.02 if settings.get("fast_mode", False) else 0.12
+
+
+async def _safe_old_forward_send(client, settings, target_chat_id, source_chat_id, msg_id):
+    retries = 3
+    for attempt in range(retries):
+        try:
+            if settings.get("forward_tag", False) or settings.get("stream_mode", False):
+                await client.forward_messages(target_chat_id, source_chat_id, msg_id)
+            else:
+                await client.copy_message(target_chat_id, source_chat_id, msg_id)
+            return True
+        except FloodWait as e:
+            await asyncio.sleep(e.value + 1)
+        except RPCError:
+            await asyncio.sleep(2 ** (attempt + 1))
+        except Exception:
+            await asyncio.sleep(0.4)
+    return False
+
+
 async def _run_old_forward_task(client, user_id, source_chat_id, target_chat_id, start_id, end_id, skip_count, status_message_id):
     start_time = time.time()
     settings = await database.get_user_settings(user_id)
@@ -218,14 +243,19 @@ async def _run_old_forward_task(client, user_id, source_chat_id, target_chat_id,
                 skipped += 1
                 continue
 
-            try:
-                if settings.get("forward_tag", False):
-                    await client.forward_messages(target_chat_id, source_chat_id, msg_id)
-                else:
-                    await client.copy_message(target_chat_id, source_chat_id, msg_id)
+            sent = await _safe_old_forward_send(
+                client,
+                settings,
+                target_chat_id,
+                source_chat_id,
+                msg_id,
+            )
+            if sent:
                 forwarded += 1
-            except Exception:
+            else:
                 failed += 1
+
+            await asyncio.sleep(_old_forward_delay(settings))
 
             if fetched % 20 == 0 or fetched == total:
                 progress = int((fetched / total) * 100) if total else 100
@@ -239,6 +269,7 @@ async def _run_old_forward_task(client, user_id, source_chat_id, target_chat_id,
                     f"📊 Progress: <b>{progress}%</b>\n"
                     f"⏱ ETA: <b>{eta}s</b>\n"
                     f"🔢 Range: <code>{start_id} → {end_id}</code>\n"
+                    f"⚙️ Mode: <b>{'FAST' if settings.get('fast_mode') else 'SAFE'}</b> | Stream: <b>{'ON' if settings.get('stream_mode') else 'OFF'}</b>\n"
                     "<b>╰━━━━━━━━━━━━━━━━━━━━━━╯</b>"
                 )
                 await client.edit_message_text(
@@ -256,6 +287,7 @@ async def _run_old_forward_task(client, user_id, source_chat_id, target_chat_id,
             f"Range: <code>{start_id} → {end_id}</code>\n"
             f"Fetched: <b>{fetched}</b> | Forwarded: <b>{forwarded}</b>\n"
             f"Skipped: <b>{skipped}</b> | Failed: <b>{failed}</b>"
+            f"Mode: <b>{'FAST' if settings.get('fast_mode') else 'SAFE'}</b> | Stream: <b>{'ON' if settings.get('stream_mode') else 'OFF'}</b>"
         )
         await client.edit_message_text(user_id, status_message_id, final_text, parse_mode=enums.ParseMode.HTML)
     except asyncio.CancelledError:

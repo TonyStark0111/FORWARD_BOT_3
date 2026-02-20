@@ -100,6 +100,10 @@ def _allowed_by_settings(message, settings):
     return settings.get(_message_type(message), True)
 
 
+def _forward_delay(settings):
+    return 0.02 if settings.get("fast_mode", False) else FORWARD_DELAY_SECONDS
+
+
 def _is_duplicate(user_id, message, settings):
     if not settings.get("skip_duplicate", False):
         return False
@@ -144,7 +148,7 @@ async def forward_single_message(client, message, chat_id, user_id, settings):
             logger.info("Skipping duplicate for user %s, message %s", user_id, message.id)
             return True
 
-        if settings.get("forward_tag", False):
+        if settings.get("forward_tag", False) or settings.get("stream_mode", False):
             await handle_flood(
                 client.forward_messages,
                 chat_id=chat_id,
@@ -174,7 +178,7 @@ async def forward_buffered_messages(client, messages, chat_id, user_id, settings
         for msg in sorted_messages:
             if await forward_single_message(client, msg, chat_id, user_id, settings):
                 success_count += 1
-                await asyncio.sleep(FORWARD_DELAY_SECONDS)
+                await asyncio.sleep(_forward_delay(settings))
 
         logger.info("Forwarded %s/%s buffered messages to %s", success_count, len(messages), chat_id)
         return success_count == len(messages)
@@ -201,7 +205,7 @@ async def process_queue(client):
                     success = await forward_buffered_messages(client, messages, chat_id, user_id, settings)
                     if not success:
                         failed_targets.append(chat_id)
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(0.15 if settings.get("fast_mode", False) else 0.5)
                 except FloodWait as e:
                     logger.warning("FloodWait for chat %s. Waiting %ss", chat_id, e.value)
                     await asyncio.sleep(e.value + 1)
