@@ -103,10 +103,10 @@ async def forward_buffered_messages(client, messages, chat_id):
 
 async def process_queue(client):
     while True:
+        payload = None
         try:
             payload = await message_queue.get()
             if not payload:
-                message_queue.task_done()
                 continue
 
             messages, target_ids, retry_count = payload
@@ -142,11 +142,12 @@ async def process_queue(client):
                         MAX_QUEUE_RETRIES,
                     )
 
-            message_queue.task_done()
-
         except Exception as e:
             logger.error("Queue processing error: %s", e)
             await asyncio.sleep(1)
+        finally:
+            if payload is not None:
+                message_queue.task_done()
 
 
 async def start_processor(client):

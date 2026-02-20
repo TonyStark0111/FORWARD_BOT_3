@@ -9,7 +9,16 @@ from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
+def _get_owner_id() -> int:
+    value = os.environ.get("OWNER_ID", "0")
+    try:
+        return int(value)
+    except ValueError:
+        logger.warning("Invalid OWNER_ID %r. Falling back to 0.", value)
+        return 0
+
+
+OWNER_ID = _get_owner_id()
 user_sessions = {}
 
 START_TEXT = """<b>👋 Hello! I am SilentXForward Bot.</b>
@@ -37,15 +46,6 @@ START_TEXT = """<b>👋 Hello! I am SilentXForward Bot.</b>
 /pauseforward - Pause forwarding (owner only)
 /resumeforward - Resume forwarding (owner only)
 /stats - Show forwarding runtime stats (owner only)
-/forward - Start forwarding
-/unequify - Remove duplicate channel mappings
-/settings - Configure your settings
-/cancel - Cancel ongoing forwarding
-/reset - Reset your settings
-/donate - Support developers
-/resetall - Reset all users (owner only)
-/broadcast - Broadcast to all users (owner only)
-/restart - Restart the bot (owner only)
 
 <b>Maintained By:</b> <a href="https://t.me/SilentXBotz">SilentXBotz</a>
 """
@@ -69,10 +69,6 @@ I Am An Auto-Forward Bot. I Forward All Message Types From Source Channels To Ta
 /settings - Show your current setup
 /status - Show advanced runtime status
 /cancel - Cancel ongoing forwarding setup
-/forward - Start forwarding setup
-/unequify - Remove duplicate target channels
-/settings - Show your current setup
-/cancel - Cancel ongoing forwarding tasks
 /reset - Reset all your settings
 /donate - Support the developer
 /resetall - Reset all users (owner only)
@@ -86,11 +82,6 @@ I Am An Auto-Forward Bot. I Forward All Message Types From Source Channels To Ta
 1. Add Me To Source Channels And Target Channels As Admin.
 2. Use <code>/forward</code> wizard OR <code>/set &lt;source_id&gt; &lt;target_id&gt;</code>.
 3. I will automatically forward all incoming channel messages.
-
-<b>How to use:</b>
-1. Add Me To Source Channels And Target Channels As Admin.
-2. Use <code>/set &lt;source_id&gt; &lt;target_id&gt;</code> to link channels.
-3. Use <code>/forward</code> to verify forwarding is active.
 
 <b>Channel:</b> @SilentXBotz
 """
@@ -167,9 +158,6 @@ async def forward_command(client, message: Message):
         "Step 1/2: Send source channel ID or username.\n"
         "Example: <code>-1001234567890</code>\n\n"
         "Use <code>/cancel</code> to stop.",
-    await message.reply_text(
-        "<b>✅ Forward mode enabled.</b>\n\n"
-        "Use <code>/set &lt;source_id&gt; &lt;target_id&gt;</code> to add mappings, then send files in source channel.",
         parse_mode=enums.ParseMode.HTML,
     )
 
@@ -187,12 +175,14 @@ async def unequify_command(client, message: Message):
 async def settings_command(client, message: Message):
     mappings = await database.get_user_mappings(message.from_user.id)
     total_targets = sum(len(item.get("target_ids", [])) for item in mappings)
+    runtime = get_forward_runtime_stats()
+    forwarding_state = "Paused" if runtime["paused"] else "Active"
+
     await message.reply_text(
         f"<b>⚙️ Your Settings</b>\n\n"
         f"• Sources: <b>{len(mappings)}</b>\n"
         f"• Targets: <b>{total_targets}</b>\n"
-        f"• Forwarding: <b>Active</b>\n\n"
-        f"• Targets: <b>{total_targets}</b>\n\n"
+        f"• Forwarding: <b>{forwarding_state}</b>\n\n"
         f"Use <code>/set</code>, <code>/remove_target</code>, <code>/remove_source</code>, and <code>/reset</code> to manage.",
         parse_mode=enums.ParseMode.HTML,
     )
@@ -221,8 +211,6 @@ async def status_command(client, message: Message):
 @Client.on_message(filters.command("cancel") & filters.private)
 async def cancel_command(client, message: Message):
     user_sessions.pop(message.from_user.id, None)
-@Client.on_message(filters.command("cancel") & filters.private)
-async def cancel_command(client, message: Message):
     await message.reply_text(
         "<b>✅ Cancelled.</b>\nAny ongoing interaction is cancelled. Scheduled mapping remains unchanged.",
         parse_mode=enums.ParseMode.HTML,
