@@ -61,6 +61,20 @@ The Bot Is Configured Using .
 - `/stats` - Show runtime queue/buffer stats (owner only)
 - `/restart` - Restart bot process (owner only)
 
+
+## Bot Commands
+
+- `/start` - Start the bot
+- `/forward` - Start forwarding flow
+- `/unequify` - Remove duplicate target IDs
+- `/settings` - Show current user settings
+- `/cancel` - Cancel ongoing interaction
+- `/reset` - Reset your mappings
+- `/donate` - Support developers
+- `/resetall` - Reset all user mappings (owner only)
+- `/broadcast <message>` - Broadcast message to users (owner only)
+- `/restart` - Restart bot process (owner only)
+
 ## Deployment
 
 ### Deploy on Heroku
