@@ -1,3 +1,5 @@
+import asyncio
+import time
 import logging
 import os
 from SilentXForward import database
@@ -20,6 +22,7 @@ def _get_owner_id() -> int:
 
 OWNER_ID = _get_owner_id()
 user_sessions = {}
+batch_forward_tasks = {}
 
 START_TEXT = """<b>👋 Hello! I am SilentXForward Bot.</b>
 
@@ -29,6 +32,7 @@ START_TEXT = """<b>👋 Hello! I am SilentXForward Bot.</b>
 /commands - Show all commands
 /about - Show bot info
 /forward - Start forwarding setup wizard
+/oldforward - Forward old messages with range
 /set &lt;source_id&gt; &lt;target_id&gt; - Add source to target mapping
 /remove_target &lt;source_id&gt; &lt;target_id&gt; - Remove one target from source
 /remove_source &lt;source_id&gt; - Remove complete source mapping
@@ -60,6 +64,7 @@ I Am An Auto-Forward Bot. I Forward All Message Types From Source Channels To Ta
 /commands - Show all commands
 /about - Show information about me
 /forward - Start interactive forwarding setup
+/oldforward - Forward old messages with range
 /set &lt;source_id&gt; &lt;target_id&gt; - Add target to source
 /remove_target &lt;source_id&gt; &lt;target_id&gt; - Remove a target from source
 /remove_source &lt;source_id&gt; - Remove source mapping
@@ -150,6 +155,116 @@ def build_filter_keyboard(settings):
     return InlineKeyboardMarkup(keyboard)
 
 
+def _message_matches_user_filter(message, settings):
+    if message.text:
+        has_link = bool(message.entities and any(str(getattr(ent, "type", "")).lower() in ("url", "text_link", "messageentitytype.url", "messageentitytype.text_link") for ent in message.entities))
+        if has_link and not settings.get("links", True):
+            return False
+        return settings.get("texts", True)
+    if message.document:
+        return settings.get("documents", True)
+    if message.video:
+        return settings.get("videos", True)
+    if message.video_note:
+        return settings.get("video_notes", True)
+    if message.photo:
+        return settings.get("photos", True)
+    if message.audio:
+        return settings.get("audios", True)
+    if message.voice:
+        return settings.get("voices", True)
+    if message.animation:
+        return settings.get("animations", True)
+    if message.sticker:
+        return settings.get("stickers", True)
+    if message.poll:
+        return settings.get("polls", True)
+    if message.contact:
+        return settings.get("contacts", True)
+    if message.location or message.venue:
+        return settings.get("locations", True)
+    return True
+
+
+async def _run_old_forward_task(client, user_id, source_chat_id, target_chat_id, start_id, end_id, skip_count, status_message_id):
+    start_time = time.time()
+    settings = await database.get_user_settings(user_id)
+
+    fetched = 0
+    forwarded = 0
+    skipped = 0
+    failed = 0
+
+    ids = range(start_id, end_id + 1)
+    total = max(0, end_id - start_id + 1)
+
+    try:
+        for idx, msg_id in enumerate(ids):
+            task_ref = batch_forward_tasks.get(user_id)
+            if not task_ref:
+                break
+
+            fetched += 1
+            if idx < skip_count:
+                skipped += 1
+                continue
+
+            msg = await client.get_messages(source_chat_id, msg_id)
+            if not msg or getattr(msg, "empty", False):
+                skipped += 1
+                continue
+
+            if not _message_matches_user_filter(msg, settings):
+                skipped += 1
+                continue
+
+            try:
+                if settings.get("forward_tag", False):
+                    await client.forward_messages(target_chat_id, source_chat_id, msg_id)
+                else:
+                    await client.copy_message(target_chat_id, source_chat_id, msg_id)
+                forwarded += 1
+            except Exception:
+                failed += 1
+
+            if fetched % 20 == 0 or fetched == total:
+                progress = int((fetched / total) * 100) if total else 100
+                eta = int(((time.time() - start_time) / fetched) * (total - fetched)) if fetched and total > fetched else 0
+                text = (
+                    "<b>╭━━━━❰ Forwarded Status ❱━━━━╮</b>\n"
+                    f"🕵️ Fetched: <b>{fetched}</b>\n"
+                    f"✅ Forwarded: <b>{forwarded}</b>\n"
+                    f"⏭ Skipped: <b>{skipped}</b>\n"
+                    f"❌ Failed: <b>{failed}</b>\n"
+                    f"📊 Progress: <b>{progress}%</b>\n"
+                    f"⏱ ETA: <b>{eta}s</b>\n"
+                    f"🔢 Range: <code>{start_id} → {end_id}</code>\n"
+                    "<b>╰━━━━━━━━━━━━━━━━━━━━━━╯</b>"
+                )
+                await client.edit_message_text(
+                    chat_id=user_id,
+                    message_id=status_message_id,
+                    text=text,
+                    parse_mode=enums.ParseMode.HTML,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("• CANCEL", callback_data=f"oldfwd_cancel:{user_id}")]]),
+                )
+
+        final_text = (
+            "<b>✅ Old Forward Completed</b>\n\n"
+            f"Source: <code>{source_chat_id}</code>\n"
+            f"Target: <code>{target_chat_id}</code>\n"
+            f"Range: <code>{start_id} → {end_id}</code>\n"
+            f"Fetched: <b>{fetched}</b> | Forwarded: <b>{forwarded}</b>\n"
+            f"Skipped: <b>{skipped}</b> | Failed: <b>{failed}</b>"
+        )
+        await client.edit_message_text(user_id, status_message_id, final_text, parse_mode=enums.ParseMode.HTML)
+    except asyncio.CancelledError:
+        await client.edit_message_text(user_id, status_message_id, "<b>🛑 Old forward process cancelled.</b>", parse_mode=enums.ParseMode.HTML)
+        raise
+    finally:
+        batch_forward_tasks.pop(user_id, None)
+
+
 def is_owner(user_id: int) -> bool:
     return OWNER_ID and user_id == OWNER_ID
 
@@ -206,6 +321,31 @@ async def forward_command(client, message: Message):
         "Use <code>/cancel</code> to stop.",
         parse_mode=enums.ParseMode.HTML,
     )
+
+
+@Client.on_message(filters.command("oldforward") & filters.private)
+async def oldforward_command(client, message: Message):
+    user_sessions[message.from_user.id] = {"state": "oldfwd_target"}
+    await message.reply_text(
+        "<b>( CHOOSE TARGET CHAT )</b>\n\n"
+        "Send target chat ID/username.\n"
+        "Then bot will ask source chat and message range (from-to).\n"
+        "Use <code>/cancel</code> anytime.",
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
+@Client.on_callback_query(filters.regex(r"^oldfwd_cancel:"))
+async def oldfwd_cancel_callback(client, callback_query: CallbackQuery):
+    user_id = int(callback_query.data.split(":", 1)[1])
+    if callback_query.from_user.id != user_id:
+        await callback_query.answer("Not your task.", show_alert=True)
+        return
+
+    task = batch_forward_tasks.pop(user_id, None)
+    if task:
+        task.cancel()
+    await callback_query.answer("Cancelling...", show_alert=False)
 
 
 @Client.on_message(filters.command("unequify") & filters.private)
@@ -482,7 +622,7 @@ async def set_channels(client, message: Message):
 
 
 @Client.on_message(filters.private & filters.text & ~filters.command([
-    "start", "help", "commands", "about", "forward", "unequify", "settings", "status", "cancel", "reset", "donate",
+    "start", "help", "commands", "about", "forward", "oldforward", "unequify", "settings", "status", "cancel", "reset", "donate",
     "resetall", "broadcast", "pauseforward", "resumeforward", "stats", "restart", "set", "remove_target", "remove_source", "list", "clear"
 ]))
 async def forward_wizard_input(client, message: Message):
@@ -492,6 +632,97 @@ async def forward_wizard_input(client, message: Message):
         return
 
     text = message.text.strip()
+
+    if session.get("state") == "oldfwd_target":
+        session["target"] = text
+        session["state"] = "oldfwd_source"
+        await message.reply_text(
+            "<b>( SET SOURCE CHAT )</b>\n\n"
+            "Send source chat ID/username.",
+            parse_mode=enums.ParseMode.HTML,
+        )
+        return
+
+    if session.get("state") == "oldfwd_source":
+        session["source"] = text
+        session["state"] = "oldfwd_from"
+        await message.reply_text(
+            "<b>( SET FROM MESSAGE ID )</b>\n\n"
+            "Send starting message ID (from).",
+            parse_mode=enums.ParseMode.HTML,
+        )
+        return
+
+    if session.get("state") == "oldfwd_from":
+        if not text.isdigit():
+            await message.reply_text("<b>❌ Invalid number.</b> Send numeric message ID.", parse_mode=enums.ParseMode.HTML)
+            return
+        session["from_id"] = int(text)
+        session["state"] = "oldfwd_to"
+        await message.reply_text(
+            "<b>( SET TO MESSAGE ID )</b>\n\n"
+            "Send ending message ID (to).",
+            parse_mode=enums.ParseMode.HTML,
+        )
+        return
+
+    if session.get("state") == "oldfwd_to":
+        if not text.isdigit():
+            await message.reply_text("<b>❌ Invalid number.</b> Send numeric message ID.", parse_mode=enums.ParseMode.HTML)
+            return
+        session["to_id"] = int(text)
+        session["state"] = "oldfwd_skip"
+        await message.reply_text(
+            "<b>( SET MESSAGE SKIPPING NUMBER )</b>\n\n"
+            "How many initial messages should be skipped?\n"
+            "Default 0. Send a number.",
+            parse_mode=enums.ParseMode.HTML,
+        )
+        return
+
+    if session.get("state") == "oldfwd_skip":
+        if not text.isdigit():
+            await message.reply_text("<b>❌ Invalid number.</b> Send numeric skip count.", parse_mode=enums.ParseMode.HTML)
+            return
+
+        skip_count = int(text)
+        source = session.get("source")
+        target = session.get("target")
+        from_id = int(session.get("from_id", 0))
+        to_id = int(session.get("to_id", 0))
+
+        if from_id <= 0 or to_id <= 0 or to_id < from_id:
+            await message.reply_text("<b>❌ Invalid range.</b> Ensure from_id <= to_id and both positive.", parse_mode=enums.ParseMode.HTML)
+            return
+
+        try:
+            source_chat = await client.get_chat(source)
+            target_chat = await client.get_chat(target)
+
+            status_message = await message.reply_text(
+                "<b>⏳ Starting old messages forward...</b>",
+                parse_mode=enums.ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("• CANCEL", callback_data=f"oldfwd_cancel:{user_id}")]]),
+            )
+
+            task = asyncio.create_task(
+                _run_old_forward_task(
+                    client,
+                    user_id,
+                    source_chat.id,
+                    target_chat.id,
+                    from_id,
+                    to_id,
+                    skip_count,
+                    status_message.id,
+                )
+            )
+            batch_forward_tasks[user_id] = task
+            user_sessions.pop(user_id, None)
+        except Exception as e:
+            user_sessions.pop(user_id, None)
+            await message.reply_text(f"<b>❌ Failed to start old forward:</b> {e}", parse_mode=enums.ParseMode.HTML)
+        return
 
     if session.get("state") == "await_source":
         session["source"] = text

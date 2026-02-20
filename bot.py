@@ -63,6 +63,7 @@ class Bot(Client):
                 BotCommand("commands", "Show all commands"),
                 BotCommand("about", "Show bot information"),
                 BotCommand("forward", "Start forward setup"),
+                BotCommand("oldforward", "Forward old messages by range"),
                 BotCommand("set", "Add source-target mapping"),
                 BotCommand("remove_target", "Remove one target from source"),
                 BotCommand("remove_source", "Remove source mapping"),
