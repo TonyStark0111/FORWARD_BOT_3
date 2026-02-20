@@ -2,7 +2,7 @@
 
 A Powerful And Efficient Telegram Bot Designed To Forward All Telegram Message Types (Text, Stickers, GIFs, Photos, Documents, Audio/Music, Video, And More) From Multiple Source Channels To Multiple Target Channels Without The "Forwarded From" Tag.
 
-**Join Telegram - [SilentXBotz](https://t.me/SilentXBotz)**
+**Join Telegram - [Filmyfly](https://t.me/filmyfly88)**
 
 ## What's New ? 
 - Now User Can Set There Source And Target Chat From Bot PM.
