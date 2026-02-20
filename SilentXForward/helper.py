@@ -1,6 +1,7 @@
 import logging
 import os
 from SilentXForward import database
+from SilentXForward.forward import get_forward_runtime_stats, set_forwarding_paused
 from pyrogram import Client, filters, enums
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -9,11 +10,33 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
+user_sessions = {}
 
 START_TEXT = """<b>👋 Hello! I am SilentXForward Bot.</b>
 
 <b>Available Commands:</b>
 /start - Start the bot
+/help - Show help menu
+/commands - Show all commands
+/about - Show bot info
+/forward - Start forwarding setup wizard
+/set &lt;source_id&gt; &lt;target_id&gt; - Add source to target mapping
+/remove_target &lt;source_id&gt; &lt;target_id&gt; - Remove one target from source
+/remove_source &lt;source_id&gt; - Remove complete source mapping
+/list - Show your mappings
+/clear - Clear all your mappings
+/unequify - Remove duplicate target IDs
+/settings - Show your settings summary
+/status - Show advanced runtime status
+/cancel - Cancel ongoing wizard
+/reset - Reset your settings
+/donate - Support developers
+/resetall - Reset all users settings (owner only)
+/broadcast &lt;message&gt; - Broadcast message (owner only)
+/restart - Restart bot (owner only)
+/pauseforward - Pause forwarding (owner only)
+/resumeforward - Resume forwarding (owner only)
+/stats - Show forwarding runtime stats (owner only)
 /forward - Start forwarding
 /unequify - Remove duplicate channel mappings
 /settings - Configure your settings
@@ -29,10 +52,23 @@ START_TEXT = """<b>👋 Hello! I am SilentXForward Bot.</b>
 
 HELP_TEXT = """<b>ℹ️ Help Menu</b>
 
-I Am An Auto-Forward Bot. I Forward Files From Source Channels To Target Channels.
+I Am An Auto-Forward Bot. I Forward All Message Types From Source Channels To Target Channels.
 
 <b>Commands:</b>
 /start - Check if I am alive
+/help - Show this help message
+/commands - Show all commands
+/about - Show information about me
+/forward - Start interactive forwarding setup
+/set &lt;source_id&gt; &lt;target_id&gt; - Add target to source
+/remove_target &lt;source_id&gt; &lt;target_id&gt; - Remove a target from source
+/remove_source &lt;source_id&gt; - Remove source mapping
+/list - View all mapped channels
+/clear - Clear all mappings
+/unequify - Remove duplicate target IDs
+/settings - Show your current setup
+/status - Show advanced runtime status
+/cancel - Cancel ongoing forwarding setup
 /forward - Start forwarding setup
 /unequify - Remove duplicate target channels
 /settings - Show your current setup
@@ -42,6 +78,14 @@ I Am An Auto-Forward Bot. I Forward Files From Source Channels To Target Channel
 /resetall - Reset all users (owner only)
 /broadcast &lt;message&gt; - Send message to users (owner only)
 /restart - Restart bot process (owner only)
+/pauseforward - Pause forwarding (owner only)
+/resumeforward - Resume forwarding (owner only)
+/stats - Show forwarding runtime stats (owner only)
+
+<b>How to use:</b>
+1. Add Me To Source Channels And Target Channels As Admin.
+2. Use <code>/forward</code> wizard OR <code>/set &lt;source_id&gt; &lt;target_id&gt;</code>.
+3. I will automatically forward all incoming channel messages.
 
 <b>How to use:</b>
 1. Add Me To Source Channels And Target Channels As Admin.
@@ -93,6 +137,18 @@ async def help_command(client, message):
     )
 
 
+
+
+@Client.on_message(filters.command("commands") & filters.private)
+async def commands_command(client, message):
+    await message.reply(
+        text=HELP_TEXT,
+        parse_mode=enums.ParseMode.HTML,
+        reply_markup=BUTTONS,
+        disable_web_page_preview=True
+    )
+
+
 @Client.on_message(filters.command("about") & filters.private)
 async def about_command(client, message):
     await message.reply(
@@ -105,6 +161,12 @@ async def about_command(client, message):
 
 @Client.on_message(filters.command("forward") & filters.private)
 async def forward_command(client, message: Message):
+    user_sessions[message.from_user.id] = {"state": "await_source"}
+    await message.reply_text(
+        "<b>✅ Forward setup started.</b>\n\n"
+        "Step 1/2: Send source channel ID or username.\n"
+        "Example: <code>-1001234567890</code>\n\n"
+        "Use <code>/cancel</code> to stop.",
     await message.reply_text(
         "<b>✅ Forward mode enabled.</b>\n\n"
         "Use <code>/set &lt;source_id&gt; &lt;target_id&gt;</code> to add mappings, then send files in source channel.",
@@ -128,12 +190,37 @@ async def settings_command(client, message: Message):
     await message.reply_text(
         f"<b>⚙️ Your Settings</b>\n\n"
         f"• Sources: <b>{len(mappings)}</b>\n"
+        f"• Targets: <b>{total_targets}</b>\n"
+        f"• Forwarding: <b>Active</b>\n\n"
         f"• Targets: <b>{total_targets}</b>\n\n"
         f"Use <code>/set</code>, <code>/remove_target</code>, <code>/remove_source</code>, and <code>/reset</code> to manage.",
         parse_mode=enums.ParseMode.HTML,
     )
 
 
+@Client.on_message(filters.command("status") & filters.private)
+async def status_command(client, message: Message):
+    mappings = await database.get_user_mappings(message.from_user.id)
+    total_targets = sum(len(item.get("target_ids", [])) for item in mappings)
+    runtime = get_forward_runtime_stats()
+    wizard_active = "Yes" if message.from_user.id in user_sessions else "No"
+
+    await message.reply_text(
+        f"<b>📈 Advanced Status</b>\n\n"
+        f"• Sources: <b>{len(mappings)}</b>\n"
+        f"• Targets: <b>{total_targets}</b>\n"
+        f"• Wizard active: <b>{wizard_active}</b>\n"
+        f"• Forward paused: <b>{'Yes' if runtime['paused'] else 'No'}</b>\n"
+        f"• Queue size: <b>{runtime['queue_size']}</b>\n"
+        f"• Album buffers: <b>{runtime['active_album_buffers']}</b>\n"
+        f"• Buffered messages: <b>{runtime['buffered_messages']}</b>",
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
+@Client.on_message(filters.command("cancel") & filters.private)
+async def cancel_command(client, message: Message):
+    user_sessions.pop(message.from_user.id, None)
 @Client.on_message(filters.command("cancel") & filters.private)
 async def cancel_command(client, message: Message):
     await message.reply_text(
@@ -144,6 +231,7 @@ async def cancel_command(client, message: Message):
 
 @Client.on_message(filters.command("reset") & filters.private)
 async def reset_command(client, message: Message):
+    user_sessions.pop(message.from_user.id, None)
     deleted = await database.clear_all_mappings(message.from_user.id)
     await message.reply_text(
         f"<b>♻️ Reset complete.</b> Removed <b>{deleted}</b> source mapping(s).",
@@ -196,6 +284,43 @@ async def broadcast_command(client, message: Message):
 
     await message.reply_text(
         f"<b>📣 Broadcast complete.</b> Sent to <b>{sent}</b>/<b>{len(user_ids)}</b> users.",
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
+@Client.on_message(filters.command("pauseforward") & filters.private)
+async def pause_forward_command(client, message: Message):
+    if not is_owner(message.from_user.id):
+        await message.reply_text("<b>❌ Owner only command.</b>", parse_mode=enums.ParseMode.HTML)
+        return
+
+    set_forwarding_paused(True)
+    await message.reply_text("<b>⏸️ Forwarding paused.</b>", parse_mode=enums.ParseMode.HTML)
+
+
+@Client.on_message(filters.command("resumeforward") & filters.private)
+async def resume_forward_command(client, message: Message):
+    if not is_owner(message.from_user.id):
+        await message.reply_text("<b>❌ Owner only command.</b>", parse_mode=enums.ParseMode.HTML)
+        return
+
+    set_forwarding_paused(False)
+    await message.reply_text("<b>▶️ Forwarding resumed.</b>", parse_mode=enums.ParseMode.HTML)
+
+
+@Client.on_message(filters.command("stats") & filters.private)
+async def stats_command(client, message: Message):
+    if not is_owner(message.from_user.id):
+        await message.reply_text("<b>❌ Owner only command.</b>", parse_mode=enums.ParseMode.HTML)
+        return
+
+    runtime = get_forward_runtime_stats()
+    await message.reply_text(
+        f"<b>🧠 Runtime Stats</b>\n\n"
+        f"• Forward paused: <b>{'Yes' if runtime['paused'] else 'No'}</b>\n"
+        f"• Queue size: <b>{runtime['queue_size']}</b>\n"
+        f"• Active album buffers: <b>{runtime['active_album_buffers']}</b>\n"
+        f"• Buffered messages: <b>{runtime['buffered_messages']}</b>",
         parse_mode=enums.ParseMode.HTML,
     )
 
@@ -275,6 +400,62 @@ async def set_channels(client, message: Message):
             "• Channel IDs are correct",
             parse_mode=enums.ParseMode.HTML
         )
+
+
+@Client.on_message(filters.private & filters.text & ~filters.command([
+    "start", "help", "commands", "about", "forward", "unequify", "settings", "status", "cancel", "reset", "donate",
+    "resetall", "broadcast", "pauseforward", "resumeforward", "stats", "restart", "set", "remove_target", "remove_source", "list", "clear"
+]))
+async def forward_wizard_input(client, message: Message):
+    user_id = message.from_user.id
+    session = user_sessions.get(user_id)
+    if not session:
+        return
+
+    text = message.text.strip()
+
+    if session.get("state") == "await_source":
+        session["source"] = text
+        session["state"] = "await_target"
+        await message.reply_text(
+            "<b>Step 2/2:</b> Now send target channel ID or username.",
+            parse_mode=enums.ParseMode.HTML,
+        )
+        return
+
+    if session.get("state") == "await_target":
+        source = session.get("source")
+        target = text
+        user_sessions.pop(user_id, None)
+
+        try:
+            source_chat = await client.get_chat(source)
+            target_chat = await client.get_chat(target)
+            result = await database.add_target_to_source(
+                user_id,
+                source_chat.id,
+                target_chat.id,
+                source_chat.title,
+                target_chat.title,
+            )
+
+            if result in ("created", "added"):
+                await message.reply_text(
+                    f"<b>✅ Forward mapping saved.</b>\n\n"
+                    f"<b>Source:</b> {source_chat.title} (<code>{source_chat.id}</code>)\n"
+                    f"<b>Target:</b> {target_chat.title} (<code>{target_chat.id}</code>)",
+                    parse_mode=enums.ParseMode.HTML,
+                )
+            else:
+                await message.reply_text(
+                    "<b>⚠️ This mapping already exists.</b>",
+                    parse_mode=enums.ParseMode.HTML,
+                )
+        except Exception as e:
+            await message.reply_text(
+                f"<b>❌ Could not save mapping:</b> {e}",
+                parse_mode=enums.ParseMode.HTML,
+            )
 
 
 @Client.on_message(filters.command("remove_target") & filters.private)

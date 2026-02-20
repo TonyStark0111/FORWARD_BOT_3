@@ -6,6 +6,7 @@ import pyrogram.utils
 import urllib.request
 from aiohttp import web
 from pyrogram import Client
+from pyrogram.types import BotCommand
 from SilentXForward.forward import start_processor
 from SilentXForward import web_server
 from config import API_ID, API_HASH, BOT_TOKEN, TG_WORKERS, WEB_SERVER, PORT, APP_URL, PING_INTERVAL
@@ -54,6 +55,33 @@ class Bot(Client):
         await super().start(*args, **kwargs)
         me = await self.get_me()
         logger.info(f"Bot Started! Name: {me.first_name} (@{me.username})")
+
+        await self.set_bot_commands(
+            [
+                BotCommand("start", "Start the bot"),
+                BotCommand("help", "Show help menu"),
+                BotCommand("commands", "Show all commands"),
+                BotCommand("about", "Show bot information"),
+                BotCommand("forward", "Start forward setup"),
+                BotCommand("set", "Add source-target mapping"),
+                BotCommand("remove_target", "Remove one target from source"),
+                BotCommand("remove_source", "Remove source mapping"),
+                BotCommand("list", "Show all mappings"),
+                BotCommand("clear", "Clear all mappings"),
+                BotCommand("unequify", "Remove duplicate targets"),
+                BotCommand("settings", "Show your settings"),
+                BotCommand("status", "Show advanced status"),
+                BotCommand("cancel", "Cancel ongoing setup"),
+                BotCommand("reset", "Reset your settings"),
+                BotCommand("donate", "Support developers"),
+                BotCommand("resetall", "Reset all users (owner only)"),
+                BotCommand("broadcast", "Broadcast message (owner only)"),
+                BotCommand("pauseforward", "Pause forwarding (owner only)"),
+                BotCommand("resumeforward", "Resume forwarding (owner only)"),
+                BotCommand("stats", "Show runtime stats (owner only)"),
+                BotCommand("restart", "Restart bot (owner only)"),
+            ]
+        )
         
         if WEB_SERVER:
             await create_server()
