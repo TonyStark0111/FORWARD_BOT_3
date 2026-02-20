@@ -78,3 +78,30 @@ async def get_all_targets_for_source(source_id):
 async def clear_all_mappings(user_id):
     result = await channel_mappings.delete_many({"user_id": user_id})
     return result.deleted_count
+
+
+async def remove_duplicate_targets(user_id):
+    mappings = await get_user_mappings(user_id)
+    removed_count = 0
+
+    for mapping in mappings:
+        targets = mapping.get("target_ids", [])
+        unique_targets = list(dict.fromkeys(targets))
+        duplicates = len(targets) - len(unique_targets)
+        if duplicates > 0:
+            await channel_mappings.update_one(
+                {"_id": mapping["_id"]},
+                {"$set": {"target_ids": unique_targets}}
+            )
+            removed_count += duplicates
+
+    return removed_count
+
+
+async def clear_everything():
+    result = await channel_mappings.delete_many({})
+    return result.deleted_count
+
+
+async def get_all_user_ids():
+    return await channel_mappings.distinct("user_id")

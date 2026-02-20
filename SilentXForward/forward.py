@@ -6,15 +6,7 @@ from pyrogram import Client, filters
 from pyrogram.errors import FloodWait, RPCError
 
 from SilentXForward import database
-from config import (
-    BUFFER_DELAY,
-    FORWARD_AUDIO,
-    FORWARD_DELAY_SECONDS,
-    FORWARD_DOCUMENT,
-    FORWARD_PHOTO,
-    FORWARD_VIDEO,
-    MAX_QUEUE_RETRIES,
-)
+from config import BUFFER_DELAY, FORWARD_DELAY_SECONDS, MAX_QUEUE_RETRIES
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -24,29 +16,6 @@ message_buffer = defaultdict(list)
 buffer_tasks = {}
 
 
-def _build_content_filter():
-    allowed = []
-    if FORWARD_VIDEO:
-        allowed.append(filters.video)
-    if FORWARD_DOCUMENT:
-        allowed.append(filters.document)
-    if FORWARD_PHOTO:
-        allowed.append(filters.photo)
-    if FORWARD_AUDIO:
-        allowed.append(filters.audio)
-
-    # Keep bot safe even if all content toggles are disabled.
-    if not allowed:
-        logger.warning("No media filter enabled, defaulting to video + document")
-        return filters.video | filters.document
-
-    dynamic = allowed[0]
-    for flt in allowed[1:]:
-        dynamic = dynamic | flt
-    return dynamic
-
-
-CONTENT_FILTER = _build_content_filter()
 
 
 async def handle_flood(func, **kwargs):
@@ -189,7 +158,7 @@ async def process_buffered_messages(buffer_key):
             if target_ids:
                 await message_queue.put((messages.copy(), target_ids, 0))
                 logger.info(
-                    "Queued buffered group (%s file(s)) from %s for %s target(s)",
+                    "Queued buffered group (%s message(s)) from %s for %s target(s)",
                     message_count,
                     source_chat_id,
                     len(target_ids),
@@ -199,7 +168,7 @@ async def process_buffered_messages(buffer_key):
         logger.error("Error processing buffered messages: %s", e)
 
 
-@Client.on_message(filters.channel & CONTENT_FILTER & ~filters.sticker & ~filters.animation)
+@Client.on_message(filters.channel)
 async def forward_content(client, message):
     try:
         source_chat_id = message.chat.id
