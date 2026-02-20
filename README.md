@@ -10,7 +10,7 @@ A Powerful And Efficient Telegram Bot Designed To Forward All Telegram Message T
 ## Features
 
 - **Multi-Source & Multi-Target**: Supports Forwarding From Multiple Source Channels To Multiple Destination Channels.
-- **Forward Everything**: Forwards all channel message types including text, stickers, GIFs, photos, documents, audio/music, and videos.
+- **Forward Everything**: Forwards all channel message types including text, stickers, GIFs, photos, documents, audio/music, and videos, including posts sent via bots in source channels.
 - **Tag Removal**: Forwards Messages Without The "Forwarded From" Tag.
 - **Smart Delivery**: Single posts are forwarded immediately while albums are grouped to preserve order.
 - **Retry & FloodWait Handling**: Automatic retry with bounded queue retries to avoid infinite loops.

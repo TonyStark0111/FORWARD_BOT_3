@@ -168,10 +168,17 @@ async def process_buffered_messages(buffer_key):
         logger.error("Error processing buffered messages: %s", e)
 
 
-@Client.on_message(filters.channel)
+def _is_bot_origin(message):
+    return bool((getattr(message, "from_user", None) and message.from_user.is_bot) or getattr(message, "via_bot", None))
+
+
+@Client.on_message((filters.channel & filters.incoming) | (filters.channel & filters.outgoing))
 async def forward_content(client, message):
     try:
         source_chat_id = message.chat.id
+
+        if _is_bot_origin(message):
+            logger.info("Detected bot-originated channel message %s in %s", message.id, source_chat_id)
 
         # Group album messages by media_group_id; process single messages immediately.
         if message.media_group_id:
