@@ -34,6 +34,7 @@ The Bot Is Configured Using .
 | `MAX_QUEUE_RETRIES` | Maximum retries for failed target forwarding. | Optional | `3` |
 | `APP_URL` | URL Of Your Deployed App (Used For Self-Pinning To Keep Awake). | Optional | `None` |
 | `OWNER_ID` | Telegram user id allowed to use owner-only commands. | Optional | `0` |
+| `USER_SESSION_STRING` | Optional Pyrogram user session string for private/restricted source forwarding fallback. | Optional | `""` |
 
 
 
@@ -61,6 +62,9 @@ The Bot Is Configured Using .
 - `/pauseforward` - Pause forwarding globally (owner only)
 - `/resumeforward` - Resume forwarding globally (owner only)
 - `/stats` - Show runtime queue/buffer stats (owner only)
+- `/addusersession` - Add pyrogram user session (owner only)
+- `/addbottoken` - Add managed bot token (owner only)
+- `/accounts` - Show managed account info (owner only)
 - `/restart` - Restart bot process (owner only)
 
 ## Deployment

@@ -3,7 +3,8 @@ import time
 import logging
 import os
 from SilentXForward import database
-from SilentXForward.forward import get_forward_runtime_stats, set_forwarding_paused
+from SilentXForward.forward import get_forward_runtime_stats, set_forwarding_paused, set_user_client, get_user_client
+from config import API_ID, API_HASH
 from pyrogram import Client, filters, enums
 from pyrogram.errors import FloodWait, RPCError
 from pyrogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -51,6 +52,9 @@ START_TEXT = """<b>👋 Hello! I am SilentXForward Bot.</b>
 /pauseforward - Pause forwarding (owner only)
 /resumeforward - Resume forwarding (owner only)
 /stats - Show forwarding runtime stats (owner only)
+/addusersession - Add pyrogram user session (owner only)
+/addbottoken - Add managed bot token (owner only)
+/accounts - Show managed bot/userbot info
 
 <b>Maintained By:</b> <a href="https://t.me/SilentXBotz">SilentXBotz</a>
 """
@@ -480,7 +484,56 @@ async def settings_callbacks(client, callback_query: CallbackQuery):
         await callback_query.answer(f"{key.replace('_', ' ').title()} updated")
         return
 
-    if data in {"settings:bots", "settings:channels", "settings:caption", "settings:mongodb", "settings:button", "settings:extra"}:
+    if data == "settings:bots":
+        await callback_query.message.edit_text(
+            "<b>🤖 Bots</b>\n\nYou can manage your bots/userbot sessions here.",
+            parse_mode=enums.ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✚ Add bot ✚", callback_data="settings:add_bot")],
+                [InlineKeyboardButton("✚ Add User bot ✚", callback_data="settings:add_userbot")],
+                [InlineKeyboardButton("🔎 Info", callback_data="settings:accounts")],
+                [InlineKeyboardButton("↩ Back", callback_data="settings:menu")],
+            ]),
+        )
+        await callback_query.answer()
+        return
+
+    if data == "settings:add_userbot":
+        user_sessions[user_id] = {"state": "await_user_session"}
+        await callback_query.message.edit_text(
+            "<b>⚠️ DISCLAIMER</b>\n\n"
+            "Send your pyrogram session string.\n"
+            "Use at your own risk.\n"
+            "/cancel - cancel process",
+            parse_mode=enums.ParseMode.HTML,
+        )
+        await callback_query.answer()
+        return
+
+    if data == "settings:add_bot":
+        user_sessions[user_id] = {"state": "await_bot_token"}
+        await callback_query.message.edit_text(
+            "<b>Send bot token to register managed bot.</b>\n\n/cancel - cancel process",
+            parse_mode=enums.ParseMode.HTML,
+        )
+        await callback_query.answer()
+        return
+
+    if data == "settings:accounts":
+        info = await database.get_account_info()
+        await callback_query.message.edit_text(
+            f"<b>📌 Informations</b>\n\n"
+            f"Userbot: <b>{info['userbot_name']}</b>\n"
+            f"Userbot ID: <code>{info['userbot_id']}</code>\n\n"
+            f"Managed Bot: <b>{info['bot_name']}</b>\n"
+            f"Bot Username: <code>{info['bot_username']}</code>",
+            parse_mode=enums.ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩ back", callback_data="settings:bots")]]),
+        )
+        await callback_query.answer()
+        return
+
+    if data in {"settings:channels", "settings:caption", "settings:mongodb", "settings:button", "settings:extra"}:
         await callback_query.answer("Feature section placeholder. Filter settings are active now.", show_alert=False)
         return
 
@@ -615,6 +668,46 @@ async def stats_command(client, message: Message):
     )
 
 
+@Client.on_message(filters.command("accounts") & filters.private)
+async def accounts_command(client, message: Message):
+    if not is_owner(message.from_user.id):
+        await message.reply_text("<b>❌ Owner only command.</b>", parse_mode=enums.ParseMode.HTML)
+        return
+    info = await database.get_account_info()
+    await message.reply_text(
+        f"<b>📌 Managed Accounts</b>\n\n"
+        f"Userbot: <b>{info['userbot_name']}</b>\n"
+        f"Userbot ID: <code>{info['userbot_id']}</code>\n\n"
+        f"Managed Bot: <b>{info['bot_name']}</b>\n"
+        f"Bot Username: <code>{info['bot_username']}</code>",
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
+@Client.on_message(filters.command("addusersession") & filters.private)
+async def addusersession_command(client, message: Message):
+    if not is_owner(message.from_user.id):
+        await message.reply_text("<b>❌ Owner only command.</b>", parse_mode=enums.ParseMode.HTML)
+        return
+    user_sessions[message.from_user.id] = {"state": "await_user_session"}
+    await message.reply_text(
+        "<b>Send your pyrogram session string.</b>\nUse /cancel to stop.",
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
+@Client.on_message(filters.command("addbottoken") & filters.private)
+async def addbottoken_command(client, message: Message):
+    if not is_owner(message.from_user.id):
+        await message.reply_text("<b>❌ Owner only command.</b>", parse_mode=enums.ParseMode.HTML)
+        return
+    user_sessions[message.from_user.id] = {"state": "await_bot_token"}
+    await message.reply_text(
+        "<b>Send bot token to register managed bot.</b>\nUse /cancel to stop.",
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
 @Client.on_message(filters.command("restart") & filters.private)
 async def restart_command(client, message: Message):
     if not is_owner(message.from_user.id):
@@ -703,6 +796,68 @@ async def forward_wizard_input(client, message: Message):
         return
 
     text = message.text.strip()
+
+    if session.get("state") == "await_user_session":
+        if not is_owner(user_id):
+            user_sessions.pop(user_id, None)
+            return
+        try:
+            ub = Client(
+                name=f"userbot_runtime_{user_id}",
+                api_id=API_ID,
+                api_hash=API_HASH,
+                session_string=text,
+                in_memory=True,
+                no_updates=True,
+            )
+            await ub.start()
+            me = await ub.get_me()
+            set_user_client(ub)
+            await database.set_system_value("userbot_session", text)
+            await database.set_system_value("userbot_name", getattr(me, "first_name", "Userbot"))
+            await database.set_system_value("userbot_id", getattr(me, "id", ""))
+            await message.reply_text(
+                f"<b>✅ Userbot session connected.</b>\n"
+                f"Name: <b>{getattr(me, 'first_name', 'User')}</b>\n"
+                f"ID: <code>{getattr(me, 'id', '')}</code>",
+                parse_mode=enums.ParseMode.HTML,
+            )
+        except Exception as e:
+            await message.reply_text(f"<b>❌ Invalid session:</b> {e}", parse_mode=enums.ParseMode.HTML)
+        finally:
+            user_sessions.pop(user_id, None)
+        return
+
+    if session.get("state") == "await_bot_token":
+        if not is_owner(user_id):
+            user_sessions.pop(user_id, None)
+            return
+        try:
+            bc = Client(
+                name=f"managed_bot_verify_{user_id}",
+                api_id=API_ID,
+                api_hash=API_HASH,
+                bot_token=text,
+                in_memory=True,
+                no_updates=True,
+            )
+            await bc.start()
+            me = await bc.get_me()
+            await bc.stop()
+            await database.set_system_value("managed_bot_token", text)
+            await database.set_system_value("managed_bot_name", getattr(me, "first_name", "Bot"))
+            await database.set_system_value("managed_bot_username", f"@{getattr(me, 'username', '')}")
+            await message.reply_text(
+                f"<b>✅ Bot token saved.</b>\n"
+                f"Name: <b>{getattr(me, 'first_name', '')}</b>\n"
+                f"Username: <code>@{getattr(me, 'username', '')}</code>",
+                parse_mode=enums.ParseMode.HTML,
+            )
+        except Exception as e:
+            await message.reply_text(f"<b>❌ Invalid bot token:</b> {e}", parse_mode=enums.ParseMode.HTML)
+        finally:
+            user_sessions.pop(user_id, None)
+        return
 
     if session.get("state") == "oldfwd_target":
         session["target"] = text

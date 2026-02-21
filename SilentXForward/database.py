@@ -6,6 +6,7 @@ db = mongo_client[config.DB_NAME]
 
 channel_mappings = db['channel_mappings']
 user_settings = db['user_settings']
+app_state = db['app_state']
 
 async def get_user_mappings(user_id):
     cursor = channel_mappings.find({"user_id": user_id})
@@ -153,3 +154,23 @@ async def toggle_user_setting(user_id, key):
         upsert=True,
     )
     return current
+
+
+async def set_system_value(key, value):
+    await app_state.update_one({"key": key}, {"$set": {"value": value}}, upsert=True)
+
+
+async def get_system_value(key, default=None):
+    doc = await app_state.find_one({"key": key})
+    if not doc:
+        return default
+    return doc.get("value", default)
+
+
+async def get_account_info():
+    return {
+        "userbot_name": await get_system_value("userbot_name", "Not set"),
+        "userbot_id": await get_system_value("userbot_id", "Not set"),
+        "bot_name": await get_system_value("managed_bot_name", "Not set"),
+        "bot_username": await get_system_value("managed_bot_username", "Not set"),
+    }

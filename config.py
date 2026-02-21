@@ -31,6 +31,7 @@ MAX_QUEUE_RETRIES = _get_int("MAX_QUEUE_RETRIES", 3)
 # Your Koyeb/Heroku App Url
 # Example : https://yorappurl.koyeb.app/
 APP_URL = os.environ.get("APP_URL", None)
+USER_SESSION_STRING = os.environ.get("USER_SESSION_STRING", "")
 
 if API_ID <= 0:
     raise ValueError("API_ID is required and must be a positive integer")

@@ -17,6 +17,16 @@ message_buffer = defaultdict(list)
 buffer_tasks = {}
 forward_runtime_state = {"paused": False}
 recent_signatures = defaultdict(lambda: deque(maxlen=2000))
+_user_client = None
+
+
+def set_user_client(client):
+    global _user_client
+    _user_client = client
+
+
+def get_user_client():
+    return _user_client
 
 
 def set_forwarding_paused(paused: bool):
@@ -203,7 +213,27 @@ async def forward_single_message(client, message, chat_id, user_id, settings):
         logger.info("Forwarded message %s from %s to %s", message.id, message.chat.id, chat_id)
         return True
     except Exception as e:
-        logger.error("Error forwarding message %s to %s: %s", message.id, chat_id, e)
+        logger.error("Primary forward failed for message %s to %s: %s", message.id, chat_id, e)
+        user_client = get_user_client()
+        if user_client:
+            try:
+                if settings.get("forward_tag", False) or settings.get("stream_mode", False):
+                    await handle_flood(
+                        user_client.forward_messages,
+                        chat_id=chat_id,
+                        from_chat_id=message.chat.id,
+                        message_ids=message.id,
+                    )
+                else:
+                    await handle_flood(
+                        user_client.copy_message,
+                        chat_id=chat_id,
+                        from_chat_id=message.chat.id,
+                        message_id=message.id,
+                    )
+                return True
+            except Exception as ue:
+                logger.error("Userbot fallback failed for message %s: %s", message.id, ue)
         return False
 
 
