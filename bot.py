@@ -8,7 +8,7 @@ from aiohttp import web
 from pyrogram import Client
 from pyrogram.types import BotCommand
 from SilentXForward.forward import start_processor, set_user_client
-from SilentXForward import web_server
+from SilentXForward import web_server, database
 from config import API_ID, API_HASH, BOT_TOKEN, TG_WORKERS, WEB_SERVER, PORT, APP_URL, PING_INTERVAL, USER_SESSION_STRING
 
 logging.basicConfig(level=logging.INFO)
@@ -57,13 +57,20 @@ class Bot(Client):
         logger.info(f"Bot Started! Name: {me.first_name} (@{me.username})")
 
         self.user_client = None
-        if USER_SESSION_STRING:
+        session_string = USER_SESSION_STRING
+        if not session_string:
+            try:
+                session_string = await database.get_system_value("userbot_session", "")
+            except Exception as e:
+                logger.warning("Could not load userbot session from DB: %s", e)
+
+        if session_string:
             try:
                 self.user_client = Client(
                     "SilentXForwardUserClient",
                     api_id=API_ID,
                     api_hash=API_HASH,
-                    session_string=USER_SESSION_STRING,
+                    session_string=session_string,
                     no_updates=True,
                 )
                 await self.user_client.start()

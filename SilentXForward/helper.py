@@ -502,8 +502,10 @@ async def settings_callbacks(client, callback_query: CallbackQuery):
         user_sessions[user_id] = {"state": "await_user_session"}
         await callback_query.message.edit_text(
             "<b>⚠️ DISCLAIMER</b>\n\n"
+            "You can use your session for forwarding from private/restricted chats.\n"
+            "Please add your pyrogram session at your own risk.\n\n"
             "Send your pyrogram session string.\n"
-            "Use at your own risk.\n"
+            "Get it from @mdsessiongenbot\n\n"
             "/cancel - cancel process",
             parse_mode=enums.ParseMode.HTML,
         )
@@ -817,10 +819,9 @@ async def forward_wizard_input(client, message: Message):
             await database.set_system_value("userbot_name", getattr(me, "first_name", "Userbot"))
             await database.set_system_value("userbot_id", getattr(me, "id", ""))
             await message.reply_text(
-                f"<b>✅ Userbot session connected.</b>\n"
-                f"Name: <b>{getattr(me, 'first_name', 'User')}</b>\n"
-                f"ID: <code>{getattr(me, 'id', '')}</code>",
+                "<b>session successfully added to db</b>",
                 parse_mode=enums.ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩ Back", callback_data="settings:bots")]]),
             )
         except Exception as e:
             await message.reply_text(f"<b>❌ Invalid session:</b> {e}", parse_mode=enums.ParseMode.HTML)
@@ -848,10 +849,9 @@ async def forward_wizard_input(client, message: Message):
             await database.set_system_value("managed_bot_name", getattr(me, "first_name", "Bot"))
             await database.set_system_value("managed_bot_username", f"@{getattr(me, 'username', '')}")
             await message.reply_text(
-                f"<b>✅ Bot token saved.</b>\n"
-                f"Name: <b>{getattr(me, 'first_name', '')}</b>\n"
-                f"Username: <code>@{getattr(me, 'username', '')}</code>",
+                "<b>bot token successfully added to db</b>",
                 parse_mode=enums.ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩ back", callback_data="settings:bots")]]),
             )
         except Exception as e:
             await message.reply_text(f"<b>❌ Invalid bot token:</b> {e}", parse_mode=enums.ParseMode.HTML)
