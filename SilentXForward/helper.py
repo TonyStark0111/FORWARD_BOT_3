@@ -1,37 +1,97 @@
+import asyncio
+import time
 import logging
+import os
 from SilentXForward import database
+from SilentXForward.forward import get_forward_runtime_stats, set_forwarding_paused, set_user_client, get_user_client
+from config import API_ID, API_HASH
 from pyrogram import Client, filters, enums
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.errors import FloodWait, RPCError
+from pyrogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def _get_owner_id() -> int:
+    value = os.environ.get("OWNER_ID", "0")
+    try:
+        return int(value)
+    except ValueError:
+        logger.warning("Invalid OWNER_ID %r. Falling back to 0.", value)
+        return 0
+
+
+OWNER_ID = _get_owner_id()
+user_sessions = {}
+batch_forward_tasks = {}
+
 START_TEXT = """<b>👋 Hello! I am SilentXForward Bot.</b>
 
-I Can Forward Videos And Documents From Multiple Channels To Multiple Other Channels, Filtering Out Unwanted Content.
+<b>Available Commands:</b>
+/start - Start the bot
+/help - Show help menu
+/commands - Show all commands
+/about - Show bot info
+/forward - Start forwarding setup wizard
+/oldforward - Forward old messages with range
+/set &lt;source_id&gt; &lt;target_id&gt; - Add source to target mapping
+/remove_target &lt;source_id&gt; &lt;target_id&gt; - Remove one target from source
+/remove_source &lt;source_id&gt; - Remove complete source mapping
+/list - Show your mappings
+/clear - Clear all your mappings
+/unequify - Remove duplicate target IDs
+/settings - Show your settings summary
+/status - Show advanced runtime status
+/cancel - Cancel ongoing wizard
+/reset - Reset your settings
+/donate - Support developers
+/resetall - Reset all users settings (owner only)
+/broadcast &lt;message&gt; - Broadcast message (owner only)
+/restart - Restart bot (owner only)
+/pauseforward - Pause forwarding (owner only)
+/resumeforward - Resume forwarding (owner only)
+/stats - Show forwarding runtime stats (owner only)
+/addusersession - Add pyrogram user session (owner only)
+/addbottoken - Add managed bot token (owner only)
+/accounts - Show managed bot/userbot info
 
 <b>Maintained By:</b> <a href="https://t.me/SilentXBotz">SilentXBotz</a>
 """
 
 HELP_TEXT = """<b>ℹ️ Help Menu</b>
 
-I Am An Auto-Forward Bot. I Forward Files From Source Channels To Target Channels.
+I Am An Auto-Forward Bot. I Forward All Message Types From Source Channels To Target Channels.
 
 <b>Commands:</b>
-/start - Check If I Am Alive.
-/help - Show This Help Message.
-/about - Show Information About Me.
-/set &lt;source_id&gt; &lt;target_id&gt; - Add Target To Source
-/remove_target &lt;source_id&gt; &lt;target_id&gt; - Remove A Target From Source
-/remove_source &lt;source_id&gt; - Remove Source
-/list - View All Set Channels 
-/clear - Clear All Mappings
+/start - Check if I am alive
+/help - Show this help message
+/commands - Show all commands
+/about - Show information about me
+/forward - Start interactive forwarding setup
+/oldforward - Forward old messages with range
+/set &lt;source_id&gt; &lt;target_id&gt; - Add target to source
+/remove_target &lt;source_id&gt; &lt;target_id&gt; - Remove a target from source
+/remove_source &lt;source_id&gt; - Remove source mapping
+/list - View all mapped channels
+/clear - Clear all mappings
+/unequify - Remove duplicate target IDs
+/settings - Show your current setup
+/status - Show advanced runtime status
+/cancel - Cancel ongoing forwarding setup
+/reset - Reset all your settings
+/donate - Support the developer
+/resetall - Reset all users (owner only)
+/broadcast &lt;message&gt; - Send message to users (owner only)
+/restart - Restart bot process (owner only)
+/pauseforward - Pause forwarding (owner only)
+/resumeforward - Resume forwarding (owner only)
+/stats - Show forwarding runtime stats (owner only)
 
 <b>How to use:</b>
 1. Add Me To Source Channels And Target Channels As Admin.
-2. Use /set command to link source to target channels.
-3. I Will Automatically Forward Videos And Documents!
+2. Use <code>/forward</code> wizard OR <code>/set &lt;source_id&gt; &lt;target_id&gt;</code>.
+3. I will automatically forward all incoming channel messages.
 
 <b>Channel:</b> @SilentXBotz
 """
@@ -39,16 +99,9 @@ I Am An Auto-Forward Bot. I Forward Files From Source Channels To Target Channel
 ABOUT_TEXT = """<b>🤖 About SilentXForward</b>
 
 <b>Name:</b> SilentXForward
-<b>Version:</b> 2.0
+<b>Version:</b> 2.1
 <b>Channel:</b> <a href="https://t.me/SilentXBotz">SilentXBotz</a>
 <b>Repository:</b> <a href="https://github.com/NBBotz/Auto-Forward-Bot">GitHub</a>
-
-<b>Features:</b>
-- Multi-Source to Multi-Target
-- Video & Document Filter
-- FloodWait Handling
-- MongoDB Database
-- Queue System
 """
 
 BUTTONS = InlineKeyboardMarkup(
@@ -60,46 +113,615 @@ BUTTONS = InlineKeyboardMarkup(
     ]
 )
 
+
+def _status_icon(value: bool) -> str:
+    return "✅" if value else "❌"
+
+
+def build_settings_keyboard():
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🤖 Bots", callback_data="settings:bots") , InlineKeyboardButton("🏷 Channels", callback_data="settings:channels")],
+            [InlineKeyboardButton("✒️ Caption", callback_data="settings:caption"), InlineKeyboardButton("🗄 MongoDB", callback_data="settings:mongodb")],
+            [InlineKeyboardButton("🕵️ Filters", callback_data="settings:filters"), InlineKeyboardButton("🔲 Button", callback_data="settings:button")],
+            [InlineKeyboardButton("🧪 Extra Settings", callback_data="settings:extra")],
+            [InlineKeyboardButton("≪ Back", callback_data="settings:back")],
+        ]
+    )
+
+
+def build_filter_keyboard(settings):
+    rows = [
+        ("🏷 Forward tag", "forward_tag"),
+        ("🖍 Texts", "texts"),
+        ("🔗 Links", "links"),
+        ("📁 Documents", "documents"),
+        ("🎞 Videos", "videos"),
+        ("📹 Video notes", "video_notes"),
+        ("📷 Photos", "photos"),
+        ("🎧 Audios", "audios"),
+        ("🎙 Voices", "voices"),
+        ("🎭 Animations", "animations"),
+        ("🃏 Stickers", "stickers"),
+        ("📊 Polls", "polls"),
+        ("👤 Contacts", "contacts"),
+        ("📍 Locations", "locations"),
+        ("⚡ Fastest mode", "fast_mode"),
+        ("📥 Stream mode", "stream_mode"),
+        ("🔗 Stream/Download buttons", "link_buttons"),
+        ("▶️ Skip duplicate", "skip_duplicate"),
+    ]
+
+    keyboard = []
+    for label, key in rows:
+        keyboard.append([
+            InlineKeyboardButton(label, callback_data="noop"),
+            InlineKeyboardButton(_status_icon(settings.get(key, False)), callback_data=f"toggle:{key}"),
+        ])
+
+    keyboard.append([InlineKeyboardButton("≪ Back", callback_data="settings:menu")])
+    return InlineKeyboardMarkup(keyboard)
+
+
+def _message_matches_user_filter(message, settings):
+    if message.text:
+        has_link = bool(message.entities and any(str(getattr(ent, "type", "")).lower() in ("url", "text_link", "messageentitytype.url", "messageentitytype.text_link") for ent in message.entities))
+        if has_link and not settings.get("links", True):
+            return False
+        return settings.get("texts", True)
+    if message.document:
+        return settings.get("documents", True)
+    if message.video:
+        return settings.get("videos", True)
+    if message.video_note:
+        return settings.get("video_notes", True)
+    if message.photo:
+        return settings.get("photos", True)
+    if message.audio:
+        return settings.get("audios", True)
+    if message.voice:
+        return settings.get("voices", True)
+    if message.animation:
+        return settings.get("animations", True)
+    if message.sticker:
+        return settings.get("stickers", True)
+    if message.poll:
+        return settings.get("polls", True)
+    if message.contact:
+        return settings.get("contacts", True)
+    if message.location or message.venue:
+        return settings.get("locations", True)
+    return True
+
+
+
+def _message_public_link(msg):
+    chat = getattr(msg, "chat", None)
+    if not chat:
+        return None
+
+    username = getattr(chat, "username", None)
+    if username:
+        return f"https://t.me/{username}/{msg.id}"
+
+    chat_id = str(getattr(chat, "id", ""))
+    if chat_id.startswith("-100"):
+        return f"https://t.me/c/{chat_id[4:]}/{msg.id}"
+
+    return None
+
+
+def _is_linkable_media(msg):
+    return bool(msg and (msg.video or msg.document or msg.audio or msg.photo or msg.animation or msg.video_note))
+
+
+
+def _old_forward_delay(settings):
+    return 0.02 if settings.get("fast_mode", False) else 0.12
+
+
+async def _safe_old_forward_send(client, settings, target_chat_id, source_chat_id, msg_id):
+    retries = 3
+    for attempt in range(retries):
+        try:
+            if settings.get("forward_tag", False) or settings.get("stream_mode", False):
+                sent = await client.forward_messages(target_chat_id, source_chat_id, msg_id)
+            else:
+                sent = await client.copy_message(target_chat_id, source_chat_id, msg_id)
+            return True, sent
+        except FloodWait as e:
+            await asyncio.sleep(e.value + 1)
+        except RPCError:
+            await asyncio.sleep(2 ** (attempt + 1))
+        except Exception:
+            await asyncio.sleep(0.4)
+    return False, None
+
+
+async def _run_old_forward_task(client, user_id, source_chat_id, target_chat_id, start_id, end_id, skip_count, status_message_id):
+    start_time = time.time()
+    settings = await database.get_user_settings(user_id)
+
+    fetched = 0
+    forwarded = 0
+    skipped = 0
+    failed = 0
+
+    ids = range(start_id, end_id + 1)
+    total = max(0, end_id - start_id + 1)
+
+    try:
+        for idx, msg_id in enumerate(ids):
+            task_ref = batch_forward_tasks.get(user_id)
+            if not task_ref:
+                break
+
+            fetched += 1
+            if idx < skip_count:
+                skipped += 1
+                continue
+
+            msg = await client.get_messages(source_chat_id, msg_id)
+            if not msg or getattr(msg, "empty", False):
+                skipped += 1
+                continue
+
+            if not _message_matches_user_filter(msg, settings):
+                skipped += 1
+                continue
+
+            ok, sent_msg = await _safe_old_forward_send(
+                client,
+                settings,
+                target_chat_id,
+                source_chat_id,
+                msg_id,
+            )
+            if ok:
+                forwarded += 1
+                if settings.get("link_buttons", False) and _is_linkable_media(sent_msg):
+                    link = _message_public_link(sent_msg)
+                    if link:
+                        stream_link = link
+                        download_link = f"{link}?download=1"
+                        await client.send_message(
+                            target_chat_id,
+                            "<b>▶️ Your links generated</b>",
+                            parse_mode=enums.ParseMode.HTML,
+                            reply_markup=InlineKeyboardMarkup(
+                                [[
+                                    InlineKeyboardButton("STREAM", url=stream_link),
+                                    InlineKeyboardButton("DOWNLOAD", url=download_link),
+                                ]]
+                            ),
+                        )
+            else:
+                failed += 1
+
+            await asyncio.sleep(_old_forward_delay(settings))
+
+            if fetched % 20 == 0 or fetched == total:
+                progress = int((fetched / total) * 100) if total else 100
+                eta = int(((time.time() - start_time) / fetched) * (total - fetched)) if fetched and total > fetched else 0
+                text = (
+                    "<b>╭━━━━❰ Forwarded Status ❱━━━━╮</b>\n"
+                    f"🕵️ Fetched: <b>{fetched}</b>\n"
+                    f"✅ Forwarded: <b>{forwarded}</b>\n"
+                    f"⏭ Skipped: <b>{skipped}</b>\n"
+                    f"❌ Failed: <b>{failed}</b>\n"
+                    f"📊 Progress: <b>{progress}%</b>\n"
+                    f"⏱ ETA: <b>{eta}s</b>\n"
+                    f"🔢 Range: <code>{start_id} → {end_id}</code>\n"
+                    f"⚙️ Mode: <b>{'FAST' if settings.get('fast_mode') else 'SAFE'}</b> | Stream: <b>{'ON' if settings.get('stream_mode') else 'OFF'}</b>\n"
+                    "<b>╰━━━━━━━━━━━━━━━━━━━━━━╯</b>"
+                )
+                await client.edit_message_text(
+                    chat_id=user_id,
+                    message_id=status_message_id,
+                    text=text,
+                    parse_mode=enums.ParseMode.HTML,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("• CANCEL", callback_data=f"oldfwd_cancel:{user_id}")]]),
+                )
+
+        final_text = (
+            "<b>✅ Old Forward Completed</b>\n\n"
+            f"Source: <code>{source_chat_id}</code>\n"
+            f"Target: <code>{target_chat_id}</code>\n"
+            f"Range: <code>{start_id} → {end_id}</code>\n"
+            f"Fetched: <b>{fetched}</b> | Forwarded: <b>{forwarded}</b>\n"
+            f"Skipped: <b>{skipped}</b> | Failed: <b>{failed}</b>"
+            f"Mode: <b>{'FAST' if settings.get('fast_mode') else 'SAFE'}</b> | Stream: <b>{'ON' if settings.get('stream_mode') else 'OFF'}</b>"
+        )
+        await client.edit_message_text(user_id, status_message_id, final_text, parse_mode=enums.ParseMode.HTML)
+    except asyncio.CancelledError:
+        await client.edit_message_text(user_id, status_message_id, "<b>🛑 Old forward process cancelled.</b>", parse_mode=enums.ParseMode.HTML)
+        raise
+    finally:
+        batch_forward_tasks.pop(user_id, None)
+
+
+def is_owner(user_id: int) -> bool:
+    return OWNER_ID and user_id == OWNER_ID
+
+
 @Client.on_message(filters.command("start") & filters.private)
 async def start_command(client, message):
-    try:
-        await message.reply(
-            text=START_TEXT,
-            parse_mode=enums.ParseMode.HTML,
-            reply_markup=BUTTONS,
-            disable_web_page_preview=True
-        )
-    except Exception as e:
-        logger.error(f"Error In Start Function: {e}")
+    await message.reply(
+        text=START_TEXT,
+        parse_mode=enums.ParseMode.HTML,
+        reply_markup=BUTTONS,
+        disable_web_page_preview=True
+    )
+
 
 @Client.on_message(filters.command("help") & filters.private)
 async def help_command(client, message):
-    try:
-        await message.reply(
-            text=HELP_TEXT,
-            parse_mode=enums.ParseMode.HTML,
-            reply_markup=BUTTONS,
-            disable_web_page_preview=True
-        )
-    except Exception as e:
-        logger.error(f"Error In Help Function: {e}")
+    await message.reply(
+        text=HELP_TEXT,
+        parse_mode=enums.ParseMode.HTML,
+        reply_markup=BUTTONS,
+        disable_web_page_preview=True
+    )
+
+
+
+
+@Client.on_message(filters.command("commands") & filters.private)
+async def commands_command(client, message):
+    await message.reply(
+        text=HELP_TEXT,
+        parse_mode=enums.ParseMode.HTML,
+        reply_markup=BUTTONS,
+        disable_web_page_preview=True
+    )
+
 
 @Client.on_message(filters.command("about") & filters.private)
 async def about_command(client, message):
-    try:
-        await message.reply(
-            text=ABOUT_TEXT,
+    await message.reply(
+        text=ABOUT_TEXT,
+        parse_mode=enums.ParseMode.HTML,
+        reply_markup=BUTTONS,
+        disable_web_page_preview=True
+    )
+
+
+@Client.on_message(filters.command("forward") & filters.private)
+async def forward_command(client, message: Message):
+    user_sessions[message.from_user.id] = {"state": "await_source"}
+    await message.reply_text(
+        "<b>✅ Forward setup started.</b>\n\n"
+        "Step 1/2: Send source channel ID or username.\n"
+        "Example: <code>-1001234567890</code>\n\n"
+        "Use <code>/cancel</code> to stop.",
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
+@Client.on_message(filters.command("oldforward") & filters.private)
+async def oldforward_command(client, message: Message):
+    user_sessions[message.from_user.id] = {"state": "oldfwd_target"}
+    await message.reply_text(
+        "<b>( CHOOSE TARGET CHAT )</b>\n\n"
+        "Send target chat ID/username.\n"
+        "Then bot will ask source chat and message range (from-to).\n"
+        "Use <code>/cancel</code> anytime.",
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
+@Client.on_callback_query(filters.regex(r"^oldfwd_cancel:"))
+async def oldfwd_cancel_callback(client, callback_query: CallbackQuery):
+    user_id = int(callback_query.data.split(":", 1)[1])
+    if callback_query.from_user.id != user_id:
+        await callback_query.answer("Not your task.", show_alert=True)
+        return
+
+    task = batch_forward_tasks.pop(user_id, None)
+    if task:
+        task.cancel()
+    await callback_query.answer("Cancelling...", show_alert=False)
+
+
+@Client.on_message(filters.command("unequify") & filters.private)
+async def unequify_command(client, message: Message):
+    removed = await database.remove_duplicate_targets(message.from_user.id)
+    await message.reply_text(
+        f"<b>✅ Done:</b> Removed <b>{removed}</b> duplicate target entries.",
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
+@Client.on_message(filters.command("settings") & filters.private)
+async def settings_command(client, message: Message):
+    runtime = get_forward_runtime_stats()
+    text = (
+        "<b>⚙️ Change your settings as your wish</b>\n\n"
+        f"Forwarding: <b>{'Paused' if runtime['paused'] else 'Active'}</b>"
+    )
+    await message.reply_text(
+        text,
+        parse_mode=enums.ParseMode.HTML,
+        reply_markup=build_settings_keyboard(),
+    )
+
+
+@Client.on_callback_query(filters.regex(r"^(settings:|toggle:|noop$)"))
+async def settings_callbacks(client, callback_query: CallbackQuery):
+    user_id = callback_query.from_user.id
+    data = callback_query.data
+
+    if data == "noop":
+        await callback_query.answer("Use right-side button to toggle.", show_alert=False)
+        return
+
+    if data == "settings:menu":
+        runtime = get_forward_runtime_stats()
+        await callback_query.message.edit_text(
+            "<b>⚙️ Change your settings as your wish</b>\n\n"
+            f"Forwarding: <b>{'Paused' if runtime['paused'] else 'Active'}</b>",
             parse_mode=enums.ParseMode.HTML,
-            reply_markup=BUTTONS,
-            disable_web_page_preview=True
+            reply_markup=build_settings_keyboard(),
         )
-    except Exception as e:
-        logger.error(f"Error In About Function: {e}")
+        await callback_query.answer()
+        return
+
+    if data == "settings:filters":
+        settings = await database.get_user_settings(user_id)
+        await callback_query.message.edit_text(
+            "<b>💠 CUSTOM FILTERS 💠</b>\n\n"
+            "Configure the type of messages which you want forward.",
+            parse_mode=enums.ParseMode.HTML,
+            reply_markup=build_filter_keyboard(settings),
+        )
+        await callback_query.answer()
+        return
+
+    if data.startswith("toggle:"):
+        key = data.split(":", 1)[1]
+        settings = await database.toggle_user_setting(user_id, key)
+        await callback_query.message.edit_reply_markup(reply_markup=build_filter_keyboard(settings))
+        await callback_query.answer(f"{key.replace('_', ' ').title()} updated")
+        return
+
+    if data == "settings:bots":
+        await callback_query.message.edit_text(
+            "<b>🤖 Bots</b>\n\nYou can manage your bots/userbot sessions here.",
+            parse_mode=enums.ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✚ Add bot ✚", callback_data="settings:add_bot")],
+                [InlineKeyboardButton("✚ Add User bot ✚", callback_data="settings:add_userbot")],
+                [InlineKeyboardButton("🔎 Info", callback_data="settings:accounts")],
+                [InlineKeyboardButton("↩ Back", callback_data="settings:menu")],
+            ]),
+        )
+        await callback_query.answer()
+        return
+
+    if data == "settings:add_userbot":
+        user_sessions[user_id] = {"state": "await_user_session"}
+        await callback_query.message.edit_text(
+            "<b>⚠️ DISCLAIMER</b>\n\n"
+            "Send your pyrogram session string.\n"
+            "Use at your own risk.\n"
+            "/cancel - cancel process",
+            parse_mode=enums.ParseMode.HTML,
+        )
+        await callback_query.answer()
+        return
+
+    if data == "settings:add_bot":
+        user_sessions[user_id] = {"state": "await_bot_token"}
+        await callback_query.message.edit_text(
+            "<b>Send bot token to register managed bot.</b>\n\n/cancel - cancel process",
+            parse_mode=enums.ParseMode.HTML,
+        )
+        await callback_query.answer()
+        return
+
+    if data == "settings:accounts":
+        info = await database.get_account_info()
+        await callback_query.message.edit_text(
+            f"<b>📌 Informations</b>\n\n"
+            f"Userbot: <b>{info['userbot_name']}</b>\n"
+            f"Userbot ID: <code>{info['userbot_id']}</code>\n\n"
+            f"Managed Bot: <b>{info['bot_name']}</b>\n"
+            f"Bot Username: <code>{info['bot_username']}</code>",
+            parse_mode=enums.ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩ back", callback_data="settings:bots")]]),
+        )
+        await callback_query.answer()
+        return
+
+    if data in {"settings:channels", "settings:caption", "settings:mongodb", "settings:button", "settings:extra"}:
+        await callback_query.answer("Feature section placeholder. Filter settings are active now.", show_alert=False)
+        return
+
+    if data == "settings:back":
+        await callback_query.message.delete()
+        await callback_query.answer()
+        return
+
+
+@Client.on_message(filters.command("status") & filters.private)
+async def status_command(client, message: Message):
+    mappings = await database.get_user_mappings(message.from_user.id)
+    total_targets = sum(len(item.get("target_ids", [])) for item in mappings)
+    runtime = get_forward_runtime_stats()
+    wizard_active = "Yes" if message.from_user.id in user_sessions else "No"
+
+    await message.reply_text(
+        f"<b>📈 Advanced Status</b>\n\n"
+        f"• Sources: <b>{len(mappings)}</b>\n"
+        f"• Targets: <b>{total_targets}</b>\n"
+        f"• Wizard active: <b>{wizard_active}</b>\n"
+        f"• Forward paused: <b>{'Yes' if runtime['paused'] else 'No'}</b>\n"
+        f"• Queue size: <b>{runtime['queue_size']}</b>\n"
+        f"• Album buffers: <b>{runtime['active_album_buffers']}</b>\n"
+        f"• Buffered messages: <b>{runtime['buffered_messages']}</b>",
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
+@Client.on_message(filters.command("cancel") & filters.private)
+async def cancel_command(client, message: Message):
+    user_sessions.pop(message.from_user.id, None)
+    await message.reply_text(
+        "<b>✅ Cancelled.</b>\nAny ongoing interaction is cancelled. Scheduled mapping remains unchanged.",
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
+@Client.on_message(filters.command("reset") & filters.private)
+async def reset_command(client, message: Message):
+    user_sessions.pop(message.from_user.id, None)
+    deleted = await database.clear_all_mappings(message.from_user.id)
+    await message.reply_text(
+        f"<b>♻️ Reset complete.</b> Removed <b>{deleted}</b> source mapping(s).",
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
+@Client.on_message(filters.command("donate") & filters.private)
+async def donate_command(client, message: Message):
+    await message.reply_text(
+        "<b>❤️ Thank you for supporting the developers!</b>\n"
+        "Donate/contact: <a href='https://t.me/SilentXBotz'>@SilentXBotz</a>",
+        parse_mode=enums.ParseMode.HTML,
+        disable_web_page_preview=True,
+    )
+
+
+@Client.on_message(filters.command("resetall") & filters.private)
+async def resetall_command(client, message: Message):
+    if not is_owner(message.from_user.id):
+        await message.reply_text("<b>❌ Owner only command.</b>", parse_mode=enums.ParseMode.HTML)
+        return
+
+    deleted = await database.clear_everything()
+    await message.reply_text(
+        f"<b>✅ Global reset complete.</b> Removed <b>{deleted}</b> mapping document(s).",
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
+@Client.on_message(filters.command("broadcast") & filters.private)
+async def broadcast_command(client, message: Message):
+    if not is_owner(message.from_user.id):
+        await message.reply_text("<b>❌ Owner only command.</b>", parse_mode=enums.ParseMode.HTML)
+        return
+
+    if len(message.command) < 2:
+        await message.reply_text("<b>Usage:</b> <code>/broadcast your message</code>", parse_mode=enums.ParseMode.HTML)
+        return
+
+    text = message.text.split(maxsplit=1)[1]
+    user_ids = await database.get_all_user_ids()
+    sent = 0
+    for user_id in user_ids:
+        try:
+            await client.send_message(user_id, text)
+            sent += 1
+        except Exception as e:
+            logger.warning("Broadcast failed for %s: %s", user_id, e)
+
+    await message.reply_text(
+        f"<b>📣 Broadcast complete.</b> Sent to <b>{sent}</b>/<b>{len(user_ids)}</b> users.",
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
+@Client.on_message(filters.command("pauseforward") & filters.private)
+async def pause_forward_command(client, message: Message):
+    if not is_owner(message.from_user.id):
+        await message.reply_text("<b>❌ Owner only command.</b>", parse_mode=enums.ParseMode.HTML)
+        return
+
+    set_forwarding_paused(True)
+    await message.reply_text("<b>⏸️ Forwarding paused.</b>", parse_mode=enums.ParseMode.HTML)
+
+
+@Client.on_message(filters.command("resumeforward") & filters.private)
+async def resume_forward_command(client, message: Message):
+    if not is_owner(message.from_user.id):
+        await message.reply_text("<b>❌ Owner only command.</b>", parse_mode=enums.ParseMode.HTML)
+        return
+
+    set_forwarding_paused(False)
+    await message.reply_text("<b>▶️ Forwarding resumed.</b>", parse_mode=enums.ParseMode.HTML)
+
+
+@Client.on_message(filters.command("stats") & filters.private)
+async def stats_command(client, message: Message):
+    if not is_owner(message.from_user.id):
+        await message.reply_text("<b>❌ Owner only command.</b>", parse_mode=enums.ParseMode.HTML)
+        return
+
+    runtime = get_forward_runtime_stats()
+    await message.reply_text(
+        f"<b>🧠 Runtime Stats</b>\n\n"
+        f"• Forward paused: <b>{'Yes' if runtime['paused'] else 'No'}</b>\n"
+        f"• Queue size: <b>{runtime['queue_size']}</b>\n"
+        f"• Active album buffers: <b>{runtime['active_album_buffers']}</b>\n"
+        f"• Buffered messages: <b>{runtime['buffered_messages']}</b>",
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
+@Client.on_message(filters.command("accounts") & filters.private)
+async def accounts_command(client, message: Message):
+    if not is_owner(message.from_user.id):
+        await message.reply_text("<b>❌ Owner only command.</b>", parse_mode=enums.ParseMode.HTML)
+        return
+    info = await database.get_account_info()
+    await message.reply_text(
+        f"<b>📌 Managed Accounts</b>\n\n"
+        f"Userbot: <b>{info['userbot_name']}</b>\n"
+        f"Userbot ID: <code>{info['userbot_id']}</code>\n\n"
+        f"Managed Bot: <b>{info['bot_name']}</b>\n"
+        f"Bot Username: <code>{info['bot_username']}</code>",
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
+@Client.on_message(filters.command("addusersession") & filters.private)
+async def addusersession_command(client, message: Message):
+    if not is_owner(message.from_user.id):
+        await message.reply_text("<b>❌ Owner only command.</b>", parse_mode=enums.ParseMode.HTML)
+        return
+    user_sessions[message.from_user.id] = {"state": "await_user_session"}
+    await message.reply_text(
+        "<b>Send your pyrogram session string.</b>\nUse /cancel to stop.",
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
+@Client.on_message(filters.command("addbottoken") & filters.private)
+async def addbottoken_command(client, message: Message):
+    if not is_owner(message.from_user.id):
+        await message.reply_text("<b>❌ Owner only command.</b>", parse_mode=enums.ParseMode.HTML)
+        return
+    user_sessions[message.from_user.id] = {"state": "await_bot_token"}
+    await message.reply_text(
+        "<b>Send bot token to register managed bot.</b>\nUse /cancel to stop.",
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
+@Client.on_message(filters.command("restart") & filters.private)
+async def restart_command(client, message: Message):
+    if not is_owner(message.from_user.id):
+        await message.reply_text("<b>❌ Owner only command.</b>", parse_mode=enums.ParseMode.HTML)
+        return
+
+    await message.reply_text("<b>♻️ Restarting bot...</b>", parse_mode=enums.ParseMode.HTML)
+    os._exit(0)
+
 
 @Client.on_message(filters.command("set") & filters.private)
 async def set_channels(client, message: Message):
     user_id = message.from_user.id
-    
+
     if len(message.command) < 3:
         await message.reply_text(
             "<b>❌ Usage:</b> <code>/set &lt;source_id&gt; &lt;target_id&gt;</code>\n\n"
@@ -108,25 +730,25 @@ async def set_channels(client, message: Message):
             parse_mode=enums.ParseMode.HTML
         )
         return
-    
+
     source = message.command[1]
     target = message.command[2]
-    
+
     try:
         source_chat = await client.get_chat(source)
         target_chat = await client.get_chat(target)
-        
+
         source_id = source_chat.id
         target_id = target_chat.id
-        
+
         result = await database.add_target_to_source(
-            user_id, 
-            source_id, 
-            target_id, 
-            source_chat.title, 
+            user_id,
+            source_id,
+            target_id,
+            source_chat.title,
             target_chat.title
         )
-        
+
         if result == "created":
             await message.reply_text(
                 f"<b>✅ New Source Created:</b>\n\n"
@@ -152,7 +774,7 @@ async def set_channels(client, message: Message):
                 f"This Target Is Already Set For This Source!",
                 parse_mode=enums.ParseMode.HTML
             )
-            
+
     except Exception as e:
         await message.reply_text(
             f"<b>❌ Error:</b> {e}\n\n"
@@ -162,22 +784,230 @@ async def set_channels(client, message: Message):
             parse_mode=enums.ParseMode.HTML
         )
 
+
+@Client.on_message(filters.private & filters.text & ~filters.command([
+    "start", "help", "commands", "about", "forward", "oldforward", "unequify", "settings", "status", "cancel", "reset", "donate",
+    "resetall", "broadcast", "pauseforward", "resumeforward", "stats", "restart", "set", "remove_target", "remove_source", "list", "clear"
+]))
+async def forward_wizard_input(client, message: Message):
+    user_id = message.from_user.id
+    session = user_sessions.get(user_id)
+    if not session:
+        return
+
+    text = message.text.strip()
+
+    if session.get("state") == "await_user_session":
+        if not is_owner(user_id):
+            user_sessions.pop(user_id, None)
+            return
+        try:
+            ub = Client(
+                name=f"userbot_runtime_{user_id}",
+                api_id=API_ID,
+                api_hash=API_HASH,
+                session_string=text,
+                in_memory=True,
+                no_updates=True,
+            )
+            await ub.start()
+            me = await ub.get_me()
+            set_user_client(ub)
+            await database.set_system_value("userbot_session", text)
+            await database.set_system_value("userbot_name", getattr(me, "first_name", "Userbot"))
+            await database.set_system_value("userbot_id", getattr(me, "id", ""))
+            await message.reply_text(
+                f"<b>✅ Userbot session connected.</b>\n"
+                f"Name: <b>{getattr(me, 'first_name', 'User')}</b>\n"
+                f"ID: <code>{getattr(me, 'id', '')}</code>",
+                parse_mode=enums.ParseMode.HTML,
+            )
+        except Exception as e:
+            await message.reply_text(f"<b>❌ Invalid session:</b> {e}", parse_mode=enums.ParseMode.HTML)
+        finally:
+            user_sessions.pop(user_id, None)
+        return
+
+    if session.get("state") == "await_bot_token":
+        if not is_owner(user_id):
+            user_sessions.pop(user_id, None)
+            return
+        try:
+            bc = Client(
+                name=f"managed_bot_verify_{user_id}",
+                api_id=API_ID,
+                api_hash=API_HASH,
+                bot_token=text,
+                in_memory=True,
+                no_updates=True,
+            )
+            await bc.start()
+            me = await bc.get_me()
+            await bc.stop()
+            await database.set_system_value("managed_bot_token", text)
+            await database.set_system_value("managed_bot_name", getattr(me, "first_name", "Bot"))
+            await database.set_system_value("managed_bot_username", f"@{getattr(me, 'username', '')}")
+            await message.reply_text(
+                f"<b>✅ Bot token saved.</b>\n"
+                f"Name: <b>{getattr(me, 'first_name', '')}</b>\n"
+                f"Username: <code>@{getattr(me, 'username', '')}</code>",
+                parse_mode=enums.ParseMode.HTML,
+            )
+        except Exception as e:
+            await message.reply_text(f"<b>❌ Invalid bot token:</b> {e}", parse_mode=enums.ParseMode.HTML)
+        finally:
+            user_sessions.pop(user_id, None)
+        return
+
+    if session.get("state") == "oldfwd_target":
+        session["target"] = text
+        session["state"] = "oldfwd_source"
+        await message.reply_text(
+            "<b>( SET SOURCE CHAT )</b>\n\n"
+            "Send source chat ID/username.",
+            parse_mode=enums.ParseMode.HTML,
+        )
+        return
+
+    if session.get("state") == "oldfwd_source":
+        session["source"] = text
+        session["state"] = "oldfwd_from"
+        await message.reply_text(
+            "<b>( SET FROM MESSAGE ID )</b>\n\n"
+            "Send starting message ID (from).",
+            parse_mode=enums.ParseMode.HTML,
+        )
+        return
+
+    if session.get("state") == "oldfwd_from":
+        if not text.isdigit():
+            await message.reply_text("<b>❌ Invalid number.</b> Send numeric message ID.", parse_mode=enums.ParseMode.HTML)
+            return
+        session["from_id"] = int(text)
+        session["state"] = "oldfwd_to"
+        await message.reply_text(
+            "<b>( SET TO MESSAGE ID )</b>\n\n"
+            "Send ending message ID (to).",
+            parse_mode=enums.ParseMode.HTML,
+        )
+        return
+
+    if session.get("state") == "oldfwd_to":
+        if not text.isdigit():
+            await message.reply_text("<b>❌ Invalid number.</b> Send numeric message ID.", parse_mode=enums.ParseMode.HTML)
+            return
+        session["to_id"] = int(text)
+        session["state"] = "oldfwd_skip"
+        await message.reply_text(
+            "<b>( SET MESSAGE SKIPPING NUMBER )</b>\n\n"
+            "How many initial messages should be skipped?\n"
+            "Default 0. Send a number.",
+            parse_mode=enums.ParseMode.HTML,
+        )
+        return
+
+    if session.get("state") == "oldfwd_skip":
+        if not text.isdigit():
+            await message.reply_text("<b>❌ Invalid number.</b> Send numeric skip count.", parse_mode=enums.ParseMode.HTML)
+            return
+
+        skip_count = int(text)
+        source = session.get("source")
+        target = session.get("target")
+        from_id = int(session.get("from_id", 0))
+        to_id = int(session.get("to_id", 0))
+
+        if from_id <= 0 or to_id <= 0 or to_id < from_id:
+            await message.reply_text("<b>❌ Invalid range.</b> Ensure from_id <= to_id and both positive.", parse_mode=enums.ParseMode.HTML)
+            return
+
+        try:
+            source_chat = await client.get_chat(source)
+            target_chat = await client.get_chat(target)
+
+            status_message = await message.reply_text(
+                "<b>⏳ Starting old messages forward...</b>",
+                parse_mode=enums.ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("• CANCEL", callback_data=f"oldfwd_cancel:{user_id}")]]),
+            )
+
+            task = asyncio.create_task(
+                _run_old_forward_task(
+                    client,
+                    user_id,
+                    source_chat.id,
+                    target_chat.id,
+                    from_id,
+                    to_id,
+                    skip_count,
+                    status_message.id,
+                )
+            )
+            batch_forward_tasks[user_id] = task
+            user_sessions.pop(user_id, None)
+        except Exception as e:
+            user_sessions.pop(user_id, None)
+            await message.reply_text(f"<b>❌ Failed to start old forward:</b> {e}", parse_mode=enums.ParseMode.HTML)
+        return
+
+    if session.get("state") == "await_source":
+        session["source"] = text
+        session["state"] = "await_target"
+        await message.reply_text(
+            "<b>Step 2/2:</b> Now send target channel ID or username.",
+            parse_mode=enums.ParseMode.HTML,
+        )
+        return
+
+    if session.get("state") == "await_target":
+        source = session.get("source")
+        target = text
+        user_sessions.pop(user_id, None)
+
+        try:
+            source_chat = await client.get_chat(source)
+            target_chat = await client.get_chat(target)
+            result = await database.add_target_to_source(
+                user_id,
+                source_chat.id,
+                target_chat.id,
+                source_chat.title,
+                target_chat.title,
+            )
+
+            if result in ("created", "added"):
+                await message.reply_text(
+                    f"<b>✅ Forward mapping saved.</b>\n\n"
+                    f"<b>Source:</b> {source_chat.title} (<code>{source_chat.id}</code>)\n"
+                    f"<b>Target:</b> {target_chat.title} (<code>{target_chat.id}</code>)",
+                    parse_mode=enums.ParseMode.HTML,
+                )
+            else:
+                await message.reply_text(
+                    "<b>⚠️ This mapping already exists.</b>",
+                    parse_mode=enums.ParseMode.HTML,
+                )
+        except Exception as e:
+            await message.reply_text(
+                f"<b>❌ Could not save mapping:</b> {e}",
+                parse_mode=enums.ParseMode.HTML,
+            )
+
+
 @Client.on_message(filters.command("remove_target") & filters.private)
 async def remove_target_channel(client, message: Message):
     user_id = message.from_user.id
-    
+
     if len(message.command) < 3:
         await message.reply_text(
-            "<b>❌ Usage:</b> <code>/rem &lt;source_id&gt; &lt;target_id&gt;</code>\n\n"
-            "<b>Examples:</b>\n"
-            "<code>/rem -1001234567890 -1009876543210</code>",
+            "<b>❌ Usage:</b> <code>/remove_target &lt;source_id&gt; &lt;target_id&gt;</code>",
             parse_mode=enums.ParseMode.HTML
         )
         return
-    
+
     source_input = message.command[1]
     target_input = message.command[2]
-    
+
     try:
         source_chat = await client.get_chat(source_input)
         source_id = source_chat.id
@@ -186,85 +1016,76 @@ async def remove_target_channel(client, message: Message):
         target_chat = await client.get_chat(target_input)
         target_id = target_chat.id
         target_title = target_chat.title
-        
+
         result = await database.remove_target_from_source(user_id, source_id, target_id)
-        
+
         if result == "removed":
             await message.reply_text(
                 f"<b>✅ Target Removed Successfully!</b>\n\n"
                 f"<b>📥 Source:</b> {source_title}\n"
                 f"   <code>{source_id}</code>\n\n"
                 f"<b>🗑️ Target:</b> {target_title}\n"
-                f"   <code>{target_id}</code>\n\n"
-                f"Target Channel Has Been Removed From This Source Mapping.",
+                f"   <code>{target_id}</code>",
                 parse_mode=enums.ParseMode.HTML
             )
         else:
             await message.reply_text(
-                f"<b>⚠️ Not Found:</b>\n\n"
-                f"<b>📥 Source:</b> {source_title}\n"
-                f"<b>🗑️ Target:</b> {target_title}\n\n"
-                f"No Mapping Exists For This Source-target Pair.\n\n"
-                f"Use <code>/list</code> To See Your Current Mappings.",
+                f"<b>⚠️ Not Found:</b>\nNo Mapping Exists For This Source-target Pair.",
                 parse_mode=enums.ParseMode.HTML
             )
-            
-    except Exception as e:
-        await message.reply_text(
-            f"<b>❌ Error:</b> {e}\n\n"
-            f"Make sure both channel IDs are valid and accessible.",
-            parse_mode=enums.ParseMode.HTML
-        )
-        
-@Client.on_message(filters.command("remove_source") & filters.private)
-async def remove_channel(client, message: Message):
-    user_id = message.from_user.id
-    
-    if len(message.command) < 2:
-        await message.reply_text(
-            "<b>❌ Usage:</b> <code>/rem &lt;source_id&gt;</code>\n\n"
-            "<b>Examples:</b>\n"
-            "<code>/rem -1001234567890</code>",
-            parse_mode=enums.ParseMode.HTML
-        )
-        return
-    
-    source = message.command[1]
-    
-    try:
-        chat = await client.get_chat(source)
-        source_id = chat.id
-        
-        removed = await database.remove_source(user_id, source_id)
-        
-        if removed:
-            await message.reply_text(
-                f"<b>✅ Removed:</b>\n\n"
-                f"<b>📥 Source:</b> {chat.title}\n"
-                f"   <code>{source_id}</code>\n\n"
-                f"All Targets For This Source Have Been Removed.",
-                parse_mode=enums.ParseMode.HTML
-            )
-        else:
-            await message.reply_text(
-                f"<b>⚠️ Not Found:</b>\n\n"
-                f"No Targets Exists For <b>{chat.title}</b>\n\n"
-                f"Use /list To See Your Mappings.",
-                parse_mode=enums.ParseMode.HTML
-            )
-            
+
     except Exception as e:
         await message.reply_text(
             f"<b>❌ Error:</b> {e}",
             parse_mode=enums.ParseMode.HTML
         )
 
+
+@Client.on_message(filters.command("remove_source") & filters.private)
+async def remove_channel(client, message: Message):
+    user_id = message.from_user.id
+
+    if len(message.command) < 2:
+        await message.reply_text(
+            "<b>❌ Usage:</b> <code>/remove_source &lt;source_id&gt;</code>",
+            parse_mode=enums.ParseMode.HTML
+        )
+        return
+
+    source = message.command[1]
+
+    try:
+        chat = await client.get_chat(source)
+        source_id = chat.id
+
+        removed = await database.remove_source(user_id, source_id)
+
+        if removed:
+            await message.reply_text(
+                f"<b>✅ Removed:</b>\n\n"
+                f"<b>📥 Source:</b> {chat.title}\n"
+                f"   <code>{source_id}</code>",
+                parse_mode=enums.ParseMode.HTML
+            )
+        else:
+            await message.reply_text(
+                f"<b>⚠️ Not Found:</b>\nNo Targets Exists For <b>{chat.title}</b>",
+                parse_mode=enums.ParseMode.HTML
+            )
+
+    except Exception as e:
+        await message.reply_text(
+            f"<b>❌ Error:</b> {e}",
+            parse_mode=enums.ParseMode.HTML
+        )
+
+
 @Client.on_message(filters.command("list") & filters.private)
 async def list_mappings(client, message: Message):
     user_id = message.from_user.id
-    
+
     mappings = await database.get_user_mappings(user_id)
-    
+
     if not mappings:
         await message.reply_text(
             "<b>❌ No mappings found!</b>\n\n"
@@ -272,41 +1093,42 @@ async def list_mappings(client, message: Message):
             parse_mode=enums.ParseMode.HTML
         )
         return
-    
+
     text = "<b>📊 Your Channel Mappings:</b>\n\n"
-    
+
     for idx, mapping in enumerate(mappings, 1):
         source_id = mapping['source_id']
         target_ids = mapping.get('target_ids', [])
-        
+
         try:
             source_chat = await client.get_chat(source_id)
             text += f"<b>{idx}. 📥 {source_chat.title}</b>\n"
             text += f"   <code>{source_id}</code>\n"
             text += f"   ⤵️ <b>Targets ({len(target_ids)}):</b>\n"
-            
+
             for target_id in target_ids:
                 try:
                     target_chat = await client.get_chat(target_id)
                     text += f"   • {target_chat.title} (<code>{target_id}</code>)\n"
-                except:
+                except Exception:
                     text += f"   • <code>{target_id}</code> (Unable to fetch)\n"
-            
+
             text += "\n"
-        except:
+        except Exception:
             text += f"<b>{idx}.</b> <code>{source_id}</code> (Unable to fetch)\n"
             text += f"   Targets: {len(target_ids)}\n\n"
-    
+
     text += f"<b>Total Sources:</b> {len(mappings)}"
-    
+
     await message.reply_text(text, parse_mode=enums.ParseMode.HTML)
+
 
 @Client.on_message(filters.command("clear") & filters.private)
 async def clear_all(client, message: Message):
     user_id = message.from_user.id
-    
+
     count = await database.clear_all_mappings(user_id)
-    
+
     if count > 0:
         await message.reply_text(
             f"<b>✅ Cleared {count} source(s)!</b>\n\n"
