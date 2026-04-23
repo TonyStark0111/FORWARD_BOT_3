@@ -10,12 +10,12 @@ def _get_int(name: str, default: int) -> int:
         raise ValueError(f"{name} must be an integer, got: {value!r}") from exc
 
 
-API_ID = _get_int("API_ID", 0)
-API_HASH = os.environ.get("API_HASH", "")
+API_ID = _get_int("API_ID", 30128415)
+API_HASH = os.environ.get("API_HASH", "7e02885160c39ed21e7b2a76ad625dd2")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 
-MONGO_URI = os.environ.get("MONGO_URI", "")
-DB_NAME = os.environ.get("DB_NAME", "SilentXBotz")
+MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://XZonebot1:XZonebot1@cluster0.wlxgww7.mongodb.net/?appName=Cluster0")
+DB_NAME = os.environ.get("DB_NAME", "testing")
 
 WEB_SERVER = os.environ.get("WEB_SERVER", "True").lower() in ("true", "1", "t")
 PORT = _get_int("PORT", 8080)
