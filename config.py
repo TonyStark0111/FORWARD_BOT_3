@@ -17,7 +17,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://XZonebot1:XZonebot1@cluster0.wlxgww7.mongodb.net/?appName=Cluster0")
 DB_NAME = os.environ.get("DB_NAME", "testing")
 
-WEB_SERVER = os.environ.get("WEB_SERVER", "True").lower() in ("true", "1", "t")
+WEB_SERVER = os.environ.get("WEB_SERVER", "False").lower() in ("true", "1", "t")
 PORT = _get_int("PORT", 8080)
 PING_INTERVAL = _get_int("PING_INTERVAL", 300)
 
